@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.base import utcnow
-from app.models import Doc, DocVersion, Project, Task
+from app.models import Doc, DocVersion, Project, ProjectTodo, Task
 
 _CODE_ALPHABET = string.ascii_uppercase + string.digits
 CODE_LENGTH = 8
@@ -36,6 +36,11 @@ def cascade_delete_project(db: Session, project: Project) -> None:
     )
     db.execute(
         update(Task).where(Task.project_id == project.id, Task.deleted_at.is_(None)).values(deleted_at=now)
+    )
+    db.execute(
+        update(ProjectTodo)
+        .where(ProjectTodo.project_id == project.id, ProjectTodo.deleted_at.is_(None))
+        .values(deleted_at=now)
     )
     project.deleted_at = now
     db.commit()

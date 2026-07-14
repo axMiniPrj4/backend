@@ -15,7 +15,7 @@ def _validate_status(v: str) -> str:
 class TaskCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     content: str | None = None
-    assignee_id: int | None = None  # 미지정 시 생성자 자동 할당
+    assignee_ids: list[int] | None = None  # 미지정/빈 목록 시 생성자 자동 할당
     start_date: date
     end_date: date
 
@@ -25,7 +25,7 @@ class TaskUpdateRequest(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     content: str | None = None
-    assignee_id: int | None = None
+    assignee_ids: list[int] | None = None  # 전달 시 전체 교체 (빈 목록 불가)
     start_date: date | None = None
     end_date: date | None = None
 
@@ -36,6 +36,11 @@ class TaskStatusUpdateRequest(BaseModel):
     _s = field_validator("status")(_validate_status)
 
 
+class TaskAssigneeResponse(ORMModel):
+    id: int
+    nickname: str
+
+
 class TaskResponse(ORMModel):
     id: int
     project_id: int
@@ -43,7 +48,7 @@ class TaskResponse(ORMModel):
     content: str | None
     status: str
     creator_id: int
-    assignee_id: int
+    assignees: list[TaskAssigneeResponse]
     start_date: date
     end_date: date
     created_at: datetime
@@ -53,8 +58,7 @@ class TaskResponse(ORMModel):
 class GanttTaskItem(BaseModel):
     id: int
     title: str
-    assignee_id: int
-    assignee_nickname: str
+    assignees: list[TaskAssigneeResponse]
     start_date: date
     end_date: date
     status: str

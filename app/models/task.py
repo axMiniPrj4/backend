@@ -1,7 +1,7 @@
 from datetime import date
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, ForeignKey, Index, String, Text
+from sqlalchemy import Column, Date, ForeignKey, Index, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, BigIntPK, SoftDeleteMixin, TimestampMixin
@@ -18,6 +18,15 @@ class TaskStatus:
     ALL = {TODO, IN_PROGRESS, DONE}
 
 
+# 담당자 다중 선택 — Hard Delete (재지정 시 행 교체)
+task_assignee = Table(
+    "task_assignee",
+    Base.metadata,
+    Column("task_id", BigIntPK, ForeignKey("task.id"), primary_key=True),
+    Column("user_id", BigIntPK, ForeignKey("user.id"), primary_key=True),
+)
+
+
 class Task(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "task"
     __table_args__ = (Index("ix_task_project_deleted", "project_id", "deleted_at"),)
@@ -28,9 +37,12 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=TaskStatus.TODO)
     creator_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
-    assignee_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
 
     creator: Mapped["User"] = relationship(foreign_keys=[creator_id])
-    assignee: Mapped["User"] = relationship(foreign_keys=[assignee_id])
+    assignees: Mapped[list["User"]] = relationship(secondary=task_assignee, order_by="User.id")
+
+    @property
+    def assignee_ids(self) -> list[int]:
+        return [u.id for u in self.assignees]

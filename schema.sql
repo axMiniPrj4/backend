@@ -1,5 +1,6 @@
--- 오합지졸.io schema.sql v1.1
+-- 오합지졸.io schema.sql v1.2
 -- 생성 기준: app/models (SQLAlchemy) — 실제 반영은 Alembic 마이그레이션 사용
+-- 변경: task 담당자 다중화(task_assignee), project_todo 추가
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE user (
@@ -58,7 +59,6 @@ CREATE TABLE task (
 	content TEXT, 
 	status VARCHAR(20) NOT NULL, 
 	creator_id BIGINT NOT NULL, 
-	assignee_id BIGINT NOT NULL, 
 	start_date DATE NOT NULL, 
 	end_date DATE NOT NULL, 
 	created_at DATETIME NOT NULL, 
@@ -66,8 +66,7 @@ CREATE TABLE task (
 	deleted_at DATETIME, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(project_id) REFERENCES project (id), 
-	FOREIGN KEY(creator_id) REFERENCES user (id), 
-	FOREIGN KEY(assignee_id) REFERENCES user (id)
+	FOREIGN KEY(creator_id) REFERENCES user (id)
 );
 
 CREATE INDEX ix_task_project_deleted ON task (project_id, deleted_at);
@@ -83,6 +82,23 @@ CREATE TABLE todo (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES user (id)
 );
+
+CREATE TABLE project_todo (
+	id BIGINT NOT NULL AUTO_INCREMENT, 
+	project_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	content VARCHAR(200) NOT NULL, 
+	priority VARCHAR(10) NOT NULL, 
+	status VARCHAR(10) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	deleted_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(project_id) REFERENCES project (id), 
+	FOREIGN KEY(user_id) REFERENCES user (id)
+);
+
+CREATE INDEX ix_project_todo_project_deleted ON project_todo (project_id, deleted_at);
 
 CREATE TABLE doc (
 	id BIGINT NOT NULL AUTO_INCREMENT, 
@@ -115,6 +131,14 @@ CREATE TABLE inquiry (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES user (id), 
 	FOREIGN KEY(project_id) REFERENCES project (id)
+);
+
+CREATE TABLE task_assignee (
+	task_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	PRIMARY KEY (task_id, user_id), 
+	FOREIGN KEY(task_id) REFERENCES task (id), 
+	FOREIGN KEY(user_id) REFERENCES user (id)
 );
 
 CREATE TABLE doc_version (

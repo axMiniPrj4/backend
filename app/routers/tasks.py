@@ -6,12 +6,13 @@ from app.core.deps import ProjectContext, get_project_context
 from app.core.errors import ErrorCode, bad_request, forbidden, not_found
 from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.db.session import get_db
-from app.models import ProjectMember, Task
+from app.models import ProjectMember, Task, User
 from app.models.task import TaskStatus
 from app.schemas.common import PageResponse
 from app.schemas.task import (
     GanttResponse,
     GanttTaskItem,
+    TaskAssigneeResponse,
     TaskCreateRequest,
     TaskResponse,
     TaskStatusUpdateRequest,
@@ -28,18 +29,28 @@ def _validate_dates(start, end):
         raise bad_request(ErrorCode.INVALID_DATE_RANGE, "시작일은 종료일보다 늦을 수 없습니다.")
 
 
-def _ensure_member(db: Session, project_id: int, user_id: int):
-    exists = db.scalar(
-        select(ProjectMember.id).where(
-            ProjectMember.project_id == project_id, ProjectMember.user_id == user_id
+def _resolve_assignees(db: Session, project_id: int, assignee_ids: list[int]) -> list[User]:
+    """담당자 목록 검증 — 전원이 프로젝트 멤버여야 한다. 중복은 제거."""
+    ids = list(dict.fromkeys(assignee_ids))
+    member_ids = set(
+        db.scalars(
+            select(ProjectMember.user_id).where(
+                ProjectMember.project_id == project_id, ProjectMember.user_id.in_(ids)
+            )
         )
     )
-    if not exists:
-        raise bad_request(message="담당자는 프로젝트 멤버여야 합니다.")
+    invalid = [i for i in ids if i not in member_ids]
+    if invalid:
+        raise bad_request(message=f"담당자는 프로젝트 멤버여야 합니다: {invalid}")
+    return list(db.scalars(select(User).where(User.id.in_(ids))))
 
 
 def _get_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
-    task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == ctx.project.id))
+    task = db.scalar(
+        select(Task)
+        .where(Task.id == task_id, Task.project_id == ctx.project.id)
+        .options(selectinload(Task.assignees))
+    )
     if task is None:
         raise not_found("업무를 찾을 수 없습니다.")
     return task
@@ -48,17 +59,17 @@ def _get_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
 def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_project_context), db: Session = Depends(get_db)):
     _validate_dates(body.start_date, body.end_date)
-    assignee_id = body.assignee_id if body.assignee_id is not None else ctx.user.id
-    if assignee_id != ctx.user.id:
-        _ensure_member(db, ctx.project.id, assignee_id)
+    # 미지정 시 생성자 자동 할당
+    assignee_ids = body.assignee_ids or [ctx.user.id]
+    assignees = _resolve_assignees(db, ctx.project.id, assignee_ids)
     task = Task(
         project_id=ctx.project.id,
         title=body.title,
         content=body.content,
         creator_id=ctx.user.id,
-        assignee_id=assignee_id,
         start_date=body.start_date,
         end_date=body.end_date,
+        assignees=assignees,
     )
     db.add(task)
     db.commit()
@@ -78,11 +89,11 @@ def list_tasks(
     if status is not None and status not in TaskStatus.ALL:
         raise bad_request(message=f"status 필터는 {sorted(TaskStatus.ALL)} 중 하나여야 합니다.")
     params = parse_page_params(page, size, sort, _SORT_FIELDS)
-    stmt = select(Task).where(Task.project_id == ctx.project.id)
+    stmt = select(Task).where(Task.project_id == ctx.project.id).options(selectinload(Task.assignees))
     if status is not None:
         stmt = stmt.where(Task.status == status)
     if assignee_id is not None:
-        stmt = stmt.where(Task.assignee_id == assignee_id)
+        stmt = stmt.where(Task.assignees.any(User.id == assignee_id))
     return paginate(db, stmt, Task, params)
 
 
@@ -103,10 +114,11 @@ def update_task(
     if not (ctx.is_leader or task.creator_id == ctx.user.id):
         raise forbidden("작성자 또는 팀장만 수정할 수 있습니다.")
     data = body.model_dump(exclude_unset=True)
-    if "assignee_id" in data:
-        if data["assignee_id"] is None:
-            raise bad_request(message="담당자는 비울 수 없습니다.")
-        _ensure_member(db, ctx.project.id, data["assignee_id"])
+    if "assignee_ids" in data:
+        ids = data.pop("assignee_ids")
+        if not ids:
+            raise bad_request(message="담당자는 최소 1명이어야 합니다.")
+        task.assignees = _resolve_assignees(db, ctx.project.id, ids)
     for field, value in data.items():
         setattr(task, field, value)
     _validate_dates(task.start_date, task.end_date)
@@ -122,8 +134,8 @@ def update_task_status(
     db: Session = Depends(get_db),
 ):
     task = _get_task(db, ctx, task_id)
-    # ④ 상태 변경 권한: 담당자 또는 LEADER (수정과 주체가 달라 엔드포인트 분리)
-    if not (ctx.is_leader or task.assignee_id == ctx.user.id):
+    # ④ 상태 변경 권한: 담당자 중 한 명 또는 LEADER (수정과 주체가 달라 엔드포인트 분리)
+    if not (ctx.is_leader or ctx.user.id in task.assignee_ids):
         raise forbidden("담당자 또는 팀장만 상태를 변경할 수 있습니다.")
     task.status = body.status
     db.commit()
@@ -144,7 +156,7 @@ def get_gantt(ctx: ProjectContext = Depends(get_project_context), db: Session = 
     tasks = db.scalars(
         select(Task)
         .where(Task.project_id == ctx.project.id)
-        .options(selectinload(Task.assignee))
+        .options(selectinload(Task.assignees))
         .order_by(Task.start_date.asc(), Task.id.asc())
     ).all()
     total = len(tasks)
@@ -159,8 +171,7 @@ def get_gantt(ctx: ProjectContext = Depends(get_project_context), db: Session = 
             GanttTaskItem(
                 id=t.id,
                 title=t.title,
-                assignee_id=t.assignee_id,
-                assignee_nickname=t.assignee.nickname,
+                assignees=[TaskAssigneeResponse.model_validate(u) for u in t.assignees],
                 start_date=t.start_date,
                 end_date=t.end_date,
                 status=t.status,

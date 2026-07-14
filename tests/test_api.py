@@ -143,23 +143,40 @@ def test_tasks(client):
 
     # 담당자 미지정 → 생성자 자동 할당
     r = client.post(url, json={"title": "리더의 업무", "start_date": "2026-07-14", "end_date": "2026-07-20"}, headers=_auth(S["leader_at"]))
-    assert r.status_code == 201 and r.json()["assignee_id"] == S["leader_id"]
+    assert r.status_code == 201 and [a["id"] for a in r.json()["assignees"]] == [S["leader_id"]]
     S["task_leader"] = r.json()["id"]
 
-    r = client.post(url, json={"title": "멤버의 업무", "assignee_id": S["member_id"], "start_date": "2026-07-15", "end_date": "2026-07-25"}, headers=_auth(S["leader_at"]))
+    # 다중 담당자 지정 (중복은 제거됨)
+    r = client.post(
+        url,
+        json={"title": "공동 업무", "assignee_ids": [S["member_id"], S["leader_id"], S["member_id"]],
+              "start_date": "2026-07-15", "end_date": "2026-07-25"},
+        headers=_auth(S["leader_at"]),
+    )
     assert r.status_code == 201
+    assert sorted(a["id"] for a in r.json()["assignees"]) == sorted([S["member_id"], S["leader_id"]])
     S["task_member"] = r.json()["id"]
 
-    # 수정: 작성자/LEADER만 (member2는 둘 다 아님 → 403)
-    assert client.patch(f"{url}/{S['task_member']}", json={"title": "변경"}, headers=_auth(S["member_at"])).status_code == 403
-    assert client.patch(f"{url}/{S['task_member']}", json={"title": "변경됨"}, headers=_auth(S["leader_at"])).status_code == 200
+    # 비멤버 담당자 지정 400
+    r = client.post(url, json={"title": "x", "assignee_ids": [9999], "start_date": "2026-07-15", "end_date": "2026-07-16"}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 400
 
-    # 상태 변경: 담당자/LEADER — member2는 자기 담당 업무만 가능
+    # 수정: 작성자/LEADER만 (member2는 둘 다 아님 → 403). 담당자 교체는 전체 교체
+    assert client.patch(f"{url}/{S['task_member']}", json={"title": "변경"}, headers=_auth(S["member_at"])).status_code == 403
+    r = client.patch(f"{url}/{S['task_member']}", json={"title": "변경됨", "assignee_ids": [S["member_id"]]}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 200 and [a["id"] for a in r.json()["assignees"]] == [S["member_id"]]
+    # 담당자 비우기는 불가 (최소 1명)
+    assert client.patch(f"{url}/{S['task_member']}", json={"assignee_ids": []}, headers=_auth(S["leader_at"])).status_code == 400
+
+    # 상태 변경: 담당자 중 한 명/LEADER — member2는 자기 담당 업무만 가능
     assert client.patch(f"{url}/{S['task_leader']}/status", json={"status": "DONE"}, headers=_auth(S["member_at"])).status_code == 403
     assert client.patch(f"{url}/{S['task_member']}/status", json={"status": "DONE"}, headers=_auth(S["member_at"])).status_code == 200
     assert client.patch(f"{url}/{S['task_member']}/status", json={"status": "BAD"}, headers=_auth(S["member_at"])).status_code == 400
 
     r = client.get(url, params={"status": "DONE"}, headers=_auth(S["member_at"]))
+    assert r.status_code == 200 and r.json()["total_elements"] == 1
+    # 담당자 필터: member2가 담당인 업무만
+    r = client.get(url, params={"assignee_id": S["member_id"]}, headers=_auth(S["member_at"]))
     assert r.status_code == 200 and r.json()["total_elements"] == 1
 
 
@@ -168,7 +185,7 @@ def test_gantt(client):
     assert r.status_code == 200
     body = r.json()
     assert body["total_tasks"] == 2 and body["done_tasks"] == 1 and body["progress"] == 50.0
-    assert body["tasks"][0]["assignee_nickname"]
+    assert body["tasks"][0]["assignees"][0]["nickname"]
 
 
 # ---------- Todo ----------
@@ -184,6 +201,34 @@ def test_todos(client):
     assert r.status_code == 200 and len(r.json()) == 1
     assert client.delete(f"/api/todos/{todo_id}", headers=_auth(S["member_at"])).status_code == 204
     assert client.get("/api/todos", headers=_auth(S["member_at"])).json() == []
+
+
+# ---------- 프로젝트 할 일 ----------
+
+def test_project_todos(client):
+    url = f"/api/projects/{S['pid']}/todos"
+    # 비멤버 403
+    assert client.post(url, json={"content": "x"}, headers=_auth(S["other_at"])).status_code == 403
+
+    r = client.post(url, json={"content": "회의록 정리", "priority": "HIGH"}, headers=_auth(S["member_at"]))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["priority"] == "HIGH" and body["status"] == "NOT_DONE" and body["author_nickname"]
+    ptodo_id = body["id"]
+    assert client.post(url, json={"content": "x", "priority": "BAD"}, headers=_auth(S["member_at"])).status_code == 400
+
+    # 작성자 본인 완료 토글
+    r = client.patch(f"{url}/{ptodo_id}", json={"status": "DONE"}, headers=_auth(S["member_at"]))
+    assert r.status_code == 200 and r.json()["status"] == "DONE"
+    # LEADER는 타인 작성분도 수정 가능
+    assert client.patch(f"{url}/{ptodo_id}", json={"content": "회의록 정리(팀장 수정)"}, headers=_auth(S["leader_at"])).status_code == 200
+
+    r = client.get(url, params={"status": "DONE"}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 200 and len(r.json()) == 1
+
+    # 삭제 후 404
+    assert client.delete(f"{url}/{ptodo_id}", headers=_auth(S["member_at"])).status_code == 204
+    assert client.get(url, headers=_auth(S["member_at"])).json() == []
 
 
 # ---------- Doc / DocVersion ----------
