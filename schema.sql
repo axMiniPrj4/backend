@@ -1,6 +1,6 @@
--- 오합지졸.io schema.sql v1.4
+-- 오합지졸.io schema.sql v1.5
 -- 생성 기준: app/models (SQLAlchemy) — 실제 반영은 Alembic 마이그레이션 사용
--- 변경: doc.project_id NULL 허용 (공통 자료)
+-- 변경: user.terms_agreed_at / privacy_agreed_at 추가 (가입 필수 동의 기록)
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE user (
@@ -12,8 +12,10 @@ CREATE TABLE user (
 	email VARCHAR(255) NOT NULL, 
 	`role` VARCHAR(20) NOT NULL, 
 	plan VARCHAR(10) NOT NULL, 
-	plan_expires_at DATETIME, 
-	created_at DATETIME NOT NULL, 
+	plan_expires_at DATETIME,
+	terms_agreed_at DATETIME,
+	privacy_agreed_at DATETIME,
+	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL, 
 	deleted_at DATETIME, 
 	PRIMARY KEY (id), 

@@ -29,3 +29,6 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     role: Mapped[str] = mapped_column(String(20), nullable=False, default=UserRole.USER)
     plan: Mapped[str] = mapped_column(String(10), nullable=False, default=UserPlan.FREE)
     plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 가입 시 필수 동의 기록 (감사 목적 — 시드 등 예외 경로는 NULL 가능)
+    terms_agreed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    privacy_agreed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

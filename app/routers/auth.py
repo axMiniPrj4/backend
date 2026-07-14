@@ -13,6 +13,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.db.base import utcnow
 from app.db.session import get_db
 from app.models import User
 from app.schemas.user import (
@@ -41,12 +42,15 @@ def _check_duplicates(db: Session, login_id: str | None = None, email: str | Non
 @router.post("/signup", response_model=UserResponse, status_code=201)
 def signup(body: SignupRequest, db: Session = Depends(get_db)):
     _check_duplicates(db, body.login_id, body.email, body.nickname)
+    now = utcnow()  # 필수 동의 시각 기록 (스키마에서 미동의는 400 처리됨)
     user = User(
         login_id=body.login_id,
         password_hash=hash_password(body.password),
         name=body.name,
         nickname=body.nickname,
         email=body.email,
+        terms_agreed_at=now,
+        privacy_agreed_at=now,
     )
     db.add(user)
     db.commit()

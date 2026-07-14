@@ -10,11 +10,14 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def _signup(client, login_id, nickname, email):
-    return client.post("/api/auth/signup", json={
+def _signup(client, login_id, nickname, email, **overrides):
+    payload = {
         "login_id": login_id, "password": "password1!", "name": "홍길동",
         "nickname": nickname, "email": email,
-    })
+        "legal_agreed": True,
+    }
+    payload.update(overrides)
+    return client.post("/api/auth/signup", json=payload)
 
 
 def _login(client, login_id, password="password1!"):
@@ -38,10 +41,15 @@ def test_signup_and_duplicates(client):
     assert _signup(client, "newid99", "리더", "x@test.io").json()["code"] == "DUPLICATE_NICKNAME"
     assert _signup(client, "newid99", "다른닉", "leader@test.io").json()["code"] == "DUPLICATE_EMAIL"
 
+    # 필수 동의: 이용약관·개인정보 처리방침(단일 체크박스) — 미동의면 400
+    r = _signup(client, "agree99", "동의테스트", "agree@test.io", legal_agreed=False)
+    assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR"
+
     # 비밀번호 정책: 8~16자, 영문+숫자+특수문자
     for bad in ("short1!", "password12", "verylongpassword1!"):  # 길이 미달 / 특수문자 없음 / 길이 초과
         r = client.post("/api/auth/signup", json={
             "login_id": "badpw123", "password": bad, "name": "n", "nickname": "badpw", "email": "badpw@test.io",
+            "legal_agreed": True,
         })
         assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR", bad
 

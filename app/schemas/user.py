@@ -28,8 +28,17 @@ class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     nickname: str = Field(min_length=1, max_length=30)
     email: EmailStr
+    # 필수 동의 — 프론트 가입 폼의 단일 체크박스(이용약관+개인정보 처리방침)와 대응. false면 가입 불가 (400)
+    legal_agreed: bool
 
     _pw = field_validator("password")(validate_password)
+
+    @field_validator("legal_agreed")
+    @classmethod
+    def _legal(cls, v):
+        if not v:
+            raise ValueError("이용약관 및 개인정보 처리방침에 동의해야 가입할 수 있습니다.")
+        return v
 
 
 class LoginRequest(BaseModel):
