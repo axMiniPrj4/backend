@@ -4,14 +4,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core import token_store
 from app.core.deps import get_current_user
 from app.core.errors import ErrorCode, bad_request, conflict
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.models import User
 from app.models.user import UserPlan
-from app.schemas.user import PlanUpdateRequest, UserResponse, UserUpdateRequest
+from app.schemas.user import PasswordChangeRequest, PlanUpdateRequest, UserResponse, UserUpdateRequest
 from app.services.user_service import apply_lazy_plan_expiry, withdraw_user
 
 router = APIRouter(prefix="/api/users", tags=["User"])
@@ -35,10 +36,20 @@ def update_me(body: UserUpdateRequest, user: User = Depends(get_current_user), d
         if db.scalar(select(User.id).where(User.email == body.email).execution_options(include_deleted=True)):
             raise conflict(ErrorCode.DUPLICATE_EMAIL, "이미 사용 중인 이메일입니다.")
         user.email = body.email
-    if body.password is not None:
-        user.password_hash = hash_password(body.password)
     db.commit()
     return user
+
+
+@router.post("/me/password", status_code=204)
+def change_password(body: PasswordChangeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(body.current_password, user.password_hash):
+        raise bad_request(ErrorCode.INVALID_CREDENTIALS, "현재 비밀번호가 올바르지 않습니다.")
+    if body.new_password == body.current_password:
+        raise bad_request(ErrorCode.VALIDATION_ERROR, "새 비밀번호가 현재 비밀번호와 같습니다.")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    # 다른 기기 세션 차단 — RT 폐기 (보유한 AT는 만료까지 유효)
+    token_store.delete_refresh_token(user.id)
 
 
 @router.put("/me/plan", response_model=UserResponse)

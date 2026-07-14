@@ -91,6 +91,28 @@ def test_users_me(client):
     assert r.status_code == 200 and r.json()["nickname"] == "리더킹"
 
 
+def test_change_password(client):
+    # 전용 계정 사용 — 공유 상태(leader1 등)의 비밀번호를 건드리지 않는다
+    assert _signup(client, "pwuser1", "비번유저", "pw@test.io").status_code == 201
+    tokens = _login(client, "pwuser1").json()
+    h = _auth(tokens["access_token"])
+
+    r = client.post("/api/users/me/password", json={"current_password": "wrong1!", "new_password": "newpass2@"}, headers=h)
+    assert r.status_code == 400 and r.json()["code"] == "INVALID_CREDENTIALS"
+    r = client.post("/api/users/me/password", json={"current_password": "password1!", "new_password": "weak"}, headers=h)
+    assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR"
+    r = client.post("/api/users/me/password", json={"current_password": "password1!", "new_password": "password1!"}, headers=h)
+    assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR"
+
+    r = client.post("/api/users/me/password", json={"current_password": "password1!", "new_password": "newpass2@"}, headers=h)
+    assert r.status_code == 204
+    # 변경 후: 기존 비밀번호 로그인 불가, 새 비밀번호 로그인 가능, 기존 RT 폐기
+    assert _login(client, "pwuser1").status_code == 401
+    assert _login(client, "pwuser1", "newpass2@").status_code == 200
+    r = client.post("/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert r.status_code == 401
+
+
 def test_plan_switch(client):
     r = client.put("/api/users/me/plan", json={"plan": "BASIC"}, headers=_auth(S["leader_at"]))
     assert r.status_code == 400 and r.json()["code"] == "INVALID_PLAN"

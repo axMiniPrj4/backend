@@ -57,16 +57,17 @@ class TokenResponse(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    """기준안 #2: 닉네임·이메일·비밀번호만 수정 가능."""
+    """기준안 #2: 닉네임·이메일만 수정 가능. 비밀번호는 전용 API(POST /users/me/password)로 분리."""
 
     nickname: str | None = Field(default=None, min_length=1, max_length=30)
     email: EmailStr | None = None
-    password: str | None = None
 
-    @field_validator("password")
-    @classmethod
-    def _pw(cls, v):
-        return validate_password(v) if v is not None else v
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    _pw = field_validator("new_password")(validate_password)
 
 
 class PlanUpdateRequest(BaseModel):
