@@ -24,9 +24,33 @@ router = APIRouter(prefix="/api/projects/{project_id}", tags=["Task"])
 _SORT_FIELDS = {"created_at", "title", "status", "start_date", "end_date"}
 
 
-def _validate_dates(start, end):
+def _validate_dates(start, end, project=None):
     if start > end:
         raise bad_request(ErrorCode.INVALID_DATE_RANGE, "시작일은 종료일보다 늦을 수 없습니다.")
+    if project is None:
+        return
+    p_start = project.start_date
+    p_end = project.end_date
+    if p_start and start < p_start:
+        raise bad_request(
+            ErrorCode.INVALID_DATE_RANGE,
+            f"작업 시작일은 프로젝트 시작일({p_start.isoformat()}) 이전일 수 없습니다.",
+        )
+    if p_end and end > p_end:
+        raise bad_request(
+            ErrorCode.INVALID_DATE_RANGE,
+            f"작업 종료일은 프로젝트 마감일({p_end.isoformat()}) 이후일 수 없습니다.",
+        )
+    if p_start and end < p_start:
+        raise bad_request(
+            ErrorCode.INVALID_DATE_RANGE,
+            "작업 기간이 프로젝트 기간을 벗어났습니다.",
+        )
+    if p_end and start > p_end:
+        raise bad_request(
+            ErrorCode.INVALID_DATE_RANGE,
+            "작업 기간이 프로젝트 기간을 벗어났습니다.",
+        )
 
 
 def _resolve_assignees(db: Session, project_id: int, assignee_ids: list[int]) -> list[User]:
@@ -58,7 +82,7 @@ def _get_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
 
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
 def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_project_context), db: Session = Depends(get_db)):
-    _validate_dates(body.start_date, body.end_date)
+    _validate_dates(body.start_date, body.end_date, ctx.project)
     # 미지정 시 생성자 자동 할당
     assignee_ids = body.assignee_ids or [ctx.user.id]
     assignees = _resolve_assignees(db, ctx.project.id, assignee_ids)
@@ -70,6 +94,9 @@ def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_proje
         start_date=body.start_date,
         end_date=body.end_date,
         assignees=assignees,
+        category=(body.category or "기타").strip() or "기타",
+        work_group=(body.work_group or "").strip(),
+        color=body.color,
     )
     db.add(task)
     db.commit()
@@ -119,9 +146,13 @@ def update_task(
         if not ids:
             raise bad_request(message="담당자는 최소 1명이어야 합니다.")
         task.assignees = _resolve_assignees(db, ctx.project.id, ids)
+    if "category" in data and data["category"] is not None:
+        data["category"] = str(data["category"]).strip() or "기타"
+    if "work_group" in data and data["work_group"] is not None:
+        data["work_group"] = str(data["work_group"]).strip()
     for field, value in data.items():
         setattr(task, field, value)
-    _validate_dates(task.start_date, task.end_date)
+    _validate_dates(task.start_date, task.end_date, ctx.project)
     db.commit()
     return task
 
@@ -175,6 +206,9 @@ def get_gantt(ctx: ProjectContext = Depends(get_project_context), db: Session = 
                 start_date=t.start_date,
                 end_date=t.end_date,
                 status=t.status,
+                category=t.category or "기타",
+                work_group=t.work_group or "",
+                color=t.color,
             )
             for t in tasks
         ],

@@ -96,3 +96,19 @@ class LoginHistoryResponse(ORMModel):
     user_agent: str | None
     success: bool
     created_at: datetime
+
+
+class FindLoginIdRequest(BaseModel):
+    email: EmailStr
+
+
+class FindLoginIdResponse(BaseModel):
+    login_id: str
+
+
+class ResetPasswordRequest(BaseModel):
+    login_id: str
+    email: EmailStr
+    new_password: str
+
+    _pw = field_validator("new_password")(validate_password)

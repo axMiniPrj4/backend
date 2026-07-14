@@ -1,4 +1,4 @@
-"""task 담당자 다중 선택 — task_assignee 연결 테이블 도입, task.assignee_id 제거
+"""task multi-assignee — task_assignee table, drop task.assignee_id
 
 Revision ID: b1c2d3e4f5a6
 Revises: 9829b4347e51
@@ -18,6 +18,21 @@ depends_on: Union[str, Sequence[str], None] = None
 _BigInt = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
 
 
+def _drop_assignee_fk() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "mysql":
+        return
+    rows = bind.execute(
+        sa.text(
+            "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' "
+            "AND COLUMN_NAME = 'assignee_id' AND REFERENCED_TABLE_NAME IS NOT NULL"
+        )
+    ).fetchall()
+    for (name,) in rows:
+        op.drop_constraint(name, "task", type_="foreignkey")
+
+
 def upgrade() -> None:
     op.create_table(
         "task_assignee",
@@ -27,19 +42,16 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["user.id"]),
         sa.PrimaryKeyConstraint("task_id", "user_id"),
     )
-    # 기존 단일 담당자 데이터 이관
     op.execute("INSERT INTO task_assignee (task_id, user_id) SELECT id, assignee_id FROM task")
-    # assignee_id 컬럼 제거 — FK가 걸려 있어 테이블 재생성 방식(batch) 사용
-    with op.batch_alter_table("task", recreate="always") as batch:
-        batch.drop_column("assignee_id")
+    _drop_assignee_fk()
+    op.drop_column("task", "assignee_id")
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("task", recreate="always") as batch:
-        batch.add_column(sa.Column("assignee_id", _BigInt, nullable=True))
-    # 다중 담당자 중 최소 user_id 1명만 보존
+    op.add_column("task", sa.Column("assignee_id", _BigInt, nullable=True))
     op.execute(
         "UPDATE task SET assignee_id = ("
         "SELECT MIN(user_id) FROM task_assignee WHERE task_assignee.task_id = task.id)"
     )
+    op.create_foreign_key("task_ibfk_assignee", "task", "user", ["assignee_id"], ["id"])
     op.drop_table("task_assignee")

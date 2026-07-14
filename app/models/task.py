@@ -47,6 +47,10 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
     creator_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # WBS: 구분(category) / 작업(work_group) — 세부작업은 title
+    category: Mapped[str] = mapped_column(String(50), nullable=False, default="기타")
+    work_group: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     creator: Mapped["User"] = relationship(foreign_keys=[creator_id])
     assignees: Mapped[list["User"]] = relationship(secondary=task_assignee, order_by="User.id")

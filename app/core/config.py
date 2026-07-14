@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"  # 콤마 구분 목록
 
+    # AI (선택) — 미설정 시 가응답
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

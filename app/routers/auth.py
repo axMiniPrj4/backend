@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core import token_store
 from app.core.deps import get_current_user
-from app.core.errors import ErrorCode, conflict, unauthorized
+from app.core.errors import ErrorCode, conflict, not_found, unauthorized
 from app.core.security import (
     TOKEN_TYPE_REFRESH,
     create_access_token,
@@ -18,8 +18,11 @@ from app.db.session import get_db
 from app.models import LoginHistory, User
 from app.schemas.user import (
     AvailabilityResponse,
+    FindLoginIdRequest,
+    FindLoginIdResponse,
     LoginRequest,
     RefreshRequest,
+    ResetPasswordRequest,
     SignupRequest,
     TokenResponse,
     UserResponse,
@@ -113,3 +116,23 @@ def check_email(email: str = Query(min_length=1), db: Session = Depends(get_db))
 def check_nickname(nickname: str = Query(min_length=1), db: Session = Depends(get_db)):
     exists = db.scalar(select(User.id).where(User.nickname == nickname).execution_options(include_deleted=True))
     return AvailabilityResponse(available=exists is None)
+
+
+@router.post("/find-login-id", response_model=FindLoginIdResponse)
+def find_login_id(body: FindLoginIdRequest, db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.email == body.email))
+    if user is None:
+        raise not_found("해당 이메일로 가입된 계정을 찾을 수 없습니다.")
+    return FindLoginIdResponse(login_id=user.login_id)
+
+
+@router.post("/reset-password", status_code=204)
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    user = db.scalar(
+        select(User).where(User.login_id == body.login_id, User.email == body.email)
+    )
+    if user is None:
+        raise not_found("아이디와 이메일이 일치하는 계정을 찾을 수 없습니다.")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    token_store.delete_refresh_token(user.id)

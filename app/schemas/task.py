@@ -18,6 +18,9 @@ class TaskCreateRequest(BaseModel):
     assignee_ids: list[int] | None = None  # 미지정/빈 목록 시 생성자 자동 할당
     start_date: date
     end_date: date
+    category: str | None = Field(default="기타", max_length=50)
+    work_group: str | None = Field(default="", max_length=100)
+    color: str | None = Field(default=None, max_length=20)
 
 
 class TaskUpdateRequest(BaseModel):
@@ -28,6 +31,9 @@ class TaskUpdateRequest(BaseModel):
     assignee_ids: list[int] | None = None  # 전달 시 전체 교체 (빈 목록 불가)
     start_date: date | None = None
     end_date: date | None = None
+    category: str | None = Field(default=None, max_length=50)
+    work_group: str | None = Field(default=None, max_length=100)
+    color: str | None = Field(default=None, max_length=20)
 
 
 class TaskStatusUpdateRequest(BaseModel):
@@ -51,6 +57,9 @@ class TaskResponse(ORMModel):
     assignees: list[TaskAssigneeResponse]
     start_date: date
     end_date: date
+    category: str
+    work_group: str
+    color: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -77,6 +86,9 @@ class GanttTaskItem(BaseModel):
     start_date: date
     end_date: date
     status: str
+    category: str = "기타"
+    work_group: str = ""
+    color: str | None = None
 
 
 class GanttResponse(BaseModel):

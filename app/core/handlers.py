@@ -32,7 +32,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         detail = [
-            {"loc": ".".join(str(x) for x in e["loc"]), "msg": e["msg"]}
+            {
+                "loc": ".".join(str(x) for x in e["loc"]),
+                "msg": e["msg"],
+                "type": e.get("type"),
+            }
             for e in exc.errors()
         ]
         return _error_response(400, ErrorCode.VALIDATION_ERROR, "요청 값이 유효하지 않습니다.", detail)
