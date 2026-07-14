@@ -55,6 +55,21 @@ class TaskResponse(ORMModel):
     updated_at: datetime
 
 
+class TaskCommentCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=1000)
+
+
+class TaskCommentResponse(ORMModel):
+    id: int
+    task_id: int
+    user_id: int  # 작성자
+    author_nickname: str
+    content: str
+    like_count: int
+    liked_by_me: bool = False
+    created_at: datetime
+
+
 class GanttTaskItem(BaseModel):
     id: int
     title: str

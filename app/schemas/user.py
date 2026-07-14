@@ -5,14 +5,20 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.common import ORMModel
 
-# 기준안 #5: 비밀번호 8~64자, 영문+숫자 포함
+# 기준안 #5 (2026-07-14 개정): 비밀번호 8~16자, 영문+숫자+특수문자 포함 — 프론트 정책과 통일
 _PW_LETTER = re.compile(r"[A-Za-z]")
 _PW_DIGIT = re.compile(r"\d")
+_PW_SPECIAL = re.compile(r"[^A-Za-z0-9]")
 
 
 def validate_password(v: str) -> str:
-    if not (8 <= len(v) <= 64) or not _PW_LETTER.search(v) or not _PW_DIGIT.search(v):
-        raise ValueError("비밀번호는 8~64자이며 영문과 숫자를 포함해야 합니다.")
+    if (
+        not (8 <= len(v) <= 16)
+        or not _PW_LETTER.search(v)
+        or not _PW_DIGIT.search(v)
+        or not _PW_SPECIAL.search(v)
+    ):
+        raise ValueError("비밀번호는 8~16자이며 영문, 숫자, 특수문자를 모두 포함해야 합니다.")
     return v
 
 

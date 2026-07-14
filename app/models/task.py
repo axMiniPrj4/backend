@@ -26,6 +26,14 @@ task_assignee = Table(
     Column("user_id", BigIntPK, ForeignKey("user.id"), primary_key=True),
 )
 
+# 댓글 좋아요 — Hard Delete (토글)
+comment_like = Table(
+    "comment_like",
+    Base.metadata,
+    Column("comment_id", BigIntPK, ForeignKey("task_comment.id"), primary_key=True),
+    Column("user_id", BigIntPK, ForeignKey("user.id"), primary_key=True),
+)
+
 
 class Task(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "task"
@@ -46,3 +54,24 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
     @property
     def assignee_ids(self) -> list[int]:
         return [u.id for u in self.assignees]
+
+
+class TaskComment(Base, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "task_comment"
+    __table_args__ = (Index("ix_task_comment_task_deleted", "task_id", "deleted_at"),)
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("task.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)  # 작성자
+    content: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+    author: Mapped["User"] = relationship()
+    likers: Mapped[list["User"]] = relationship(secondary=comment_like)
+
+    @property
+    def author_nickname(self) -> str:
+        return self.author.nickname
+
+    @property
+    def like_count(self) -> int:
+        return len(self.likers)

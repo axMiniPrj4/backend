@@ -12,12 +12,12 @@ def _auth(token):
 
 def _signup(client, login_id, nickname, email):
     return client.post("/api/auth/signup", json={
-        "login_id": login_id, "password": "password1", "name": "홍길동",
+        "login_id": login_id, "password": "password1!", "name": "홍길동",
         "nickname": nickname, "email": email,
     })
 
 
-def _login(client, login_id, password="password1"):
+def _login(client, login_id, password="password1!"):
     return client.post("/api/auth/login", json={"login_id": login_id, "password": password})
 
 
@@ -38,11 +38,12 @@ def test_signup_and_duplicates(client):
     assert _signup(client, "newid99", "리더", "x@test.io").json()["code"] == "DUPLICATE_NICKNAME"
     assert _signup(client, "newid99", "다른닉", "leader@test.io").json()["code"] == "DUPLICATE_EMAIL"
 
-    # 비밀번호 정책: 8~64자 영문+숫자
-    r = client.post("/api/auth/signup", json={
-        "login_id": "badpw123", "password": "short1", "name": "n", "nickname": "badpw", "email": "badpw@test.io",
-    })
-    assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR"
+    # 비밀번호 정책: 8~16자, 영문+숫자+특수문자
+    for bad in ("short1!", "password12", "verylongpassword1!"):  # 길이 미달 / 특수문자 없음 / 길이 초과
+        r = client.post("/api/auth/signup", json={
+            "login_id": "badpw123", "password": bad, "name": "n", "nickname": "badpw", "email": "badpw@test.io",
+        })
+        assert r.status_code == 400 and r.json()["code"] == "VALIDATION_ERROR", bad
 
 
 def test_check_availability(client):
@@ -186,6 +187,40 @@ def test_gantt(client):
     body = r.json()
     assert body["total_tasks"] == 2 and body["done_tasks"] == 1 and body["progress"] == 50.0
     assert body["tasks"][0]["assignees"][0]["nickname"]
+
+
+# ---------- Task 댓글 + 좋아요 ----------
+
+def test_task_comments(client):
+    url = f"/api/projects/{S['pid']}/tasks/{S['task_member']}/comments"
+    # 비멤버 403, 없는 Task 404
+    assert client.post(url, json={"content": "x"}, headers=_auth(S["other_at"])).status_code == 403
+    assert client.get(f"/api/projects/{S['pid']}/tasks/99999/comments", headers=_auth(S["member_at"])).status_code == 404
+
+    r = client.post(url, json={"content": "일정 확인 부탁해요"}, headers=_auth(S["member_at"]))
+    assert r.status_code == 201, r.text
+    c = r.json()
+    assert c["author_nickname"] and c["like_count"] == 0 and c["liked_by_me"] is False
+    S["comment_id"] = c["id"]
+
+    # 좋아요: 리더+본인 → 2, 멱등(재호출해도 2), 취소 → 1
+    assert client.post(f"{url}/{c['id']}/like", headers=_auth(S["leader_at"])).json()["like_count"] == 1
+    r = client.post(f"{url}/{c['id']}/like", headers=_auth(S["member_at"]))
+    assert r.json()["like_count"] == 2 and r.json()["liked_by_me"] is True
+    assert client.post(f"{url}/{c['id']}/like", headers=_auth(S["member_at"])).json()["like_count"] == 2
+    r = client.delete(f"{url}/{c['id']}/like", headers=_auth(S["leader_at"]))
+    assert r.json()["like_count"] == 1 and r.json()["liked_by_me"] is False
+
+    # 목록 (작성순)
+    client.post(url, json={"content": "확인했습니다"}, headers=_auth(S["leader_at"]))
+    r = client.get(url, headers=_auth(S["member_at"]))
+    assert r.status_code == 200 and len(r.json()) == 2 and r.json()[0]["id"] == S["comment_id"]
+
+    # 삭제: 작성자 아닌 멤버 403 (리더 댓글을 member2가), 작성자 본인 204
+    leader_comment_id = r.json()[1]["id"]
+    assert client.delete(f"{url}/{leader_comment_id}", headers=_auth(S["member_at"])).status_code == 403
+    assert client.delete(f"{url}/{S['comment_id']}", headers=_auth(S["member_at"])).status_code == 204
+    assert len(client.get(url, headers=_auth(S["member_at"])).json()) == 1
 
 
 # ---------- Todo ----------
@@ -333,6 +368,37 @@ def test_inquiries_and_admin(client):
     # LEADER인 회원 삭제는 409
     r = client.delete(f"/api/admin/users/{S['leader_id']}", headers=_auth(S["admin_at"]))
     assert r.status_code == 409 and r.json()["code"] == "LEADER_PROJECT_EXISTS"
+
+
+# ---------- 공지사항 ----------
+
+def test_notices(client):
+    # 관리자 CRUD — 일반 유저는 403
+    assert client.post("/api/admin/notices", json={"title": "n", "body": "b"}, headers=_auth(S["member_at"])).status_code == 403
+    assert client.post("/api/admin/notices", json={"title": "n", "body": "b", "category": "BAD"}, headers=_auth(S["admin_at"])).status_code == 400
+
+    r = client.post("/api/admin/notices", json={"title": "정기 점검 안내", "body": "7/20 02시", "category": "SERVICE"}, headers=_auth(S["admin_at"]))
+    assert r.status_code == 201, r.text
+    normal_id = r.json()["id"]
+    r = client.post("/api/admin/notices", json={"title": "v1.1 업데이트", "body": "버전관리 추가", "category": "UPDATE", "pinned": True}, headers=_auth(S["admin_at"]))
+    assert r.status_code == 201
+    pinned_id = r.json()["id"]
+
+    # 사용자 목록 — pinned 우선 + 최신순, 미인증 401
+    assert client.get("/api/notices").status_code == 401
+    r = client.get("/api/notices", headers=_auth(S["member_at"]))
+    assert r.status_code == 200 and r.json()["total_elements"] == 2
+    assert [n["id"] for n in r.json()["items"]] == [pinned_id, normal_id]
+    r = client.get("/api/notices", params={"category": "UPDATE"}, headers=_auth(S["member_at"]))
+    assert r.json()["total_elements"] == 1
+
+    # 상세 / 수정 / 삭제
+    assert client.get(f"/api/notices/{normal_id}", headers=_auth(S["member_at"])).json()["title"] == "정기 점검 안내"
+    r = client.patch(f"/api/admin/notices/{normal_id}", json={"pinned": True}, headers=_auth(S["admin_at"]))
+    assert r.status_code == 200 and r.json()["pinned"] is True
+    assert client.delete(f"/api/admin/notices/{pinned_id}", headers=_auth(S["admin_at"])).status_code == 204
+    assert client.get(f"/api/notices/{pinned_id}", headers=_auth(S["member_at"])).status_code == 404
+    assert client.get("/api/notices", headers=_auth(S["member_at"])).json()["total_elements"] == 1
 
 
 def test_delegate_leave_and_withdraw(client):

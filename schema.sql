@@ -1,6 +1,6 @@
--- 오합지졸.io schema.sql v1.2
+-- 오합지졸.io schema.sql v1.3
 -- 생성 기준: app/models (SQLAlchemy) — 실제 반영은 Alembic 마이그레이션 사용
--- 변경: task 담당자 다중화(task_assignee), project_todo 추가
+-- 변경: task_comment/comment_like, notice 추가
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE user (
@@ -133,6 +133,20 @@ CREATE TABLE inquiry (
 	FOREIGN KEY(project_id) REFERENCES project (id)
 );
 
+CREATE TABLE notice (
+	id BIGINT NOT NULL AUTO_INCREMENT, 
+	user_id BIGINT NOT NULL, 
+	title VARCHAR(200) NOT NULL, 
+	body TEXT NOT NULL, 
+	category VARCHAR(20) NOT NULL, 
+	pinned BOOL NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	deleted_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES user (id)
+);
+
 CREATE TABLE task_assignee (
 	task_id BIGINT NOT NULL, 
 	user_id BIGINT NOT NULL, 
@@ -140,6 +154,21 @@ CREATE TABLE task_assignee (
 	FOREIGN KEY(task_id) REFERENCES task (id), 
 	FOREIGN KEY(user_id) REFERENCES user (id)
 );
+
+CREATE TABLE task_comment (
+	id BIGINT NOT NULL AUTO_INCREMENT, 
+	task_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	content VARCHAR(1000) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	deleted_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(task_id) REFERENCES task (id), 
+	FOREIGN KEY(user_id) REFERENCES user (id)
+);
+
+CREATE INDEX ix_task_comment_task_deleted ON task_comment (task_id, deleted_at);
 
 CREATE TABLE doc_version (
 	id BIGINT NOT NULL AUTO_INCREMENT, 
@@ -172,6 +201,14 @@ CREATE TABLE answer (
 	PRIMARY KEY (id), 
 	UNIQUE (question_id), 
 	FOREIGN KEY(question_id) REFERENCES inquiry (id), 
+	FOREIGN KEY(user_id) REFERENCES user (id)
+);
+
+CREATE TABLE comment_like (
+	comment_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	PRIMARY KEY (comment_id, user_id), 
+	FOREIGN KEY(comment_id) REFERENCES task_comment (id), 
 	FOREIGN KEY(user_id) REFERENCES user (id)
 );
 

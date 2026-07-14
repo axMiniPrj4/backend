@@ -6,7 +6,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.handlers import register_exception_handlers
-from app.routers import admin, auth, docs, inquiries, members, project_todos, projects, tasks, todos, users
+from app.routers import (
+    admin,
+    auth,
+    docs,
+    inquiries,
+    members,
+    notices,
+    project_todos,
+    projects,
+    task_comments,
+    tasks,
+    todos,
+    users,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("app.request")
@@ -43,8 +56,10 @@ app.include_router(users.router)
 app.include_router(projects.router)
 app.include_router(members.router)
 app.include_router(tasks.router)
+app.include_router(task_comments.router)
 app.include_router(todos.router)
 app.include_router(project_todos.router)
 app.include_router(docs.router)
 app.include_router(inquiries.router)
+app.include_router(notices.router)
 app.include_router(admin.router)

@@ -6,10 +6,11 @@ from app.core.deps import require_admin
 from app.core.errors import bad_request, not_found
 from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.db.session import get_db
-from app.models import Inquiry, Project, User
+from app.models import Inquiry, Notice, Project, User
 from app.models.inquiry import InquiryStatus
 from app.schemas.common import PageResponse
 from app.schemas.inquiry import InquiryResponse
+from app.schemas.notice import NoticeCreateRequest, NoticeResponse, NoticeUpdateRequest
 from app.schemas.project import ProjectResponse
 from app.schemas.user import UserResponse
 from app.services.project_service import cascade_delete_project
@@ -71,6 +72,41 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
         raise not_found("프로젝트를 찾을 수 없습니다.")
     # 기준안 #4: LEADER 삭제와 동일한 cascade Soft Delete
     cascade_delete_project(db, project)
+
+
+@router.post("/notices", response_model=NoticeResponse, status_code=201)
+def create_notice(body: NoticeCreateRequest, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    notice = Notice(
+        user_id=admin.id, title=body.title, body=body.body, category=body.category, pinned=body.pinned
+    )
+    db.add(notice)
+    db.commit()
+    return notice
+
+
+def _get_notice(db: Session, notice_id: int) -> Notice:
+    notice = db.scalar(select(Notice).where(Notice.id == notice_id))
+    if notice is None:
+        raise not_found("공지사항을 찾을 수 없습니다.")
+    return notice
+
+
+@router.patch("/notices/{notice_id}", response_model=NoticeResponse)
+def update_notice(notice_id: int, body: NoticeUpdateRequest, db: Session = Depends(get_db)):
+    notice = _get_notice(db, notice_id)
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        if value is not None:
+            setattr(notice, field, value)
+    db.commit()
+    return notice
+
+
+@router.delete("/notices/{notice_id}", status_code=204)
+def delete_notice(notice_id: int, db: Session = Depends(get_db)):
+    notice = _get_notice(db, notice_id)
+    notice.soft_delete()
+    db.commit()
 
 
 @router.get("/inquiries", response_model=PageResponse[InquiryResponse])
