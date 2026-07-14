@@ -1,8 +1,10 @@
 """초기 SYSTEM_ADMIN 시드 스크립트 — 가입 API로는 관리자 생성 불가.
 
 사용: python -m scripts.seed_admin [login_id] [password] [email]
-기본값: admin / admin1234! / admin@ohapjijol.io (운영에서는 반드시 인자로 지정)
+우선순위: CLI 인자 > 환경변수(ADMIN_LOGIN_ID 등) > 기본값
+기본값: admin / admin1234! / admin@ohapjijol.io (운영에서는 반드시 직접 지정)
 """
+import os
 import sys
 
 from sqlalchemy import select
@@ -14,9 +16,21 @@ from app.models.user import UserRole
 
 
 def main() -> None:
-    login_id = sys.argv[1] if len(sys.argv) > 1 else "admin"
-    password = sys.argv[2] if len(sys.argv) > 2 else "admin1234!"
-    email = sys.argv[3] if len(sys.argv) > 3 else "admin@ohapjijol.io"
+    login_id = (
+        (sys.argv[1] if len(sys.argv) > 1 else None)
+        or os.getenv("ADMIN_LOGIN_ID")
+        or "admin"
+    )
+    password = (
+        (sys.argv[2] if len(sys.argv) > 2 else None)
+        or os.getenv("ADMIN_PASSWORD")
+        or "admin1234!"
+    )
+    email = (
+        (sys.argv[3] if len(sys.argv) > 3 else None)
+        or os.getenv("ADMIN_EMAIL")
+        or "admin@ohapjijol.io"
+    )
 
     with SessionLocal() as db:
         exists = db.scalar(

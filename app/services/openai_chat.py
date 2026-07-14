@@ -4,9 +4,13 @@ OPENAI_API_KEY 가 없으면 None을 반환 → 라우터에서 가응답 사용
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 
-from app.core.config import settings
+from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM = (
     "당신은 오합지졸.io 프로젝트 협업 도우미입니다. "
@@ -14,8 +18,14 @@ _SYSTEM = (
 )
 
 
+def is_openai_configured() -> bool:
+    settings = get_settings()
+    return bool((settings.openai_api_key or "").strip())
+
+
 def generate_assistant_reply(user_content: str, history: list[dict] | None = None) -> str | None:
     """Returns assistant text, or None when API key is missing / call fails."""
+    settings = get_settings()
     api_key = (settings.openai_api_key or "").strip()
     if not api_key:
         return None
@@ -47,5 +57,13 @@ def generate_assistant_reply(user_content: str, history: list[dict] | None = Non
             data = response.json()
             text = data["choices"][0]["message"]["content"]
             return (text or "").strip() or None
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "OpenAI HTTP %s: %s",
+            exc.response.status_code,
+            (exc.response.text or "")[:400],
+        )
+        return None
     except Exception:
+        logger.exception("OpenAI chat completion failed")
         return None

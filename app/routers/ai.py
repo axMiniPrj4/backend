@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user
 from app.core.errors import not_found
 from app.db.base import utcnow
@@ -17,13 +18,17 @@ from app.schemas.collaboration import (
     AiThreadOut,
     AiUsageOut,
 )
-from app.services.openai_chat import generate_assistant_reply
+from app.services.openai_chat import generate_assistant_reply, is_openai_configured
 
 router = APIRouter(prefix="/api/ai", tags=["AI"])
 
-_MOCK_ASSISTANT_REPLY = (
+_MOCK_NO_KEY = (
     "(가응답) OPENAI_API_KEY가 설정되지 않아 더미 응답입니다. "
     "백엔드 .env에 키를 넣으면 실제 답변이 생성됩니다."
+)
+_MOCK_API_FAIL = (
+    "(가응답) OpenAI API 호출에 실패했습니다. "
+    "키·모델·네트워크를 확인한 뒤 다시 시도해 주세요."
 )
 
 
@@ -59,6 +64,16 @@ def _to_thread_out(db: Session, thread: AiThread, *, include_messages: bool = Fa
 def _today_start() -> datetime:
     now = utcnow()
     return datetime(now.year, now.month, now.day)
+
+
+@router.get("/status")
+def get_ai_status(user: User = Depends(get_current_user)):
+    """프론트 연결 배지용 — 키 존재 여부만 (값은 노출하지 않음)."""
+    _ = user
+    return {
+        "configured": is_openai_configured(),
+        "model": get_settings().openai_model if is_openai_configured() else None,
+    }
 
 
 @router.get("/usage", response_model=AiUsageOut)
@@ -125,12 +140,24 @@ def post_message(
         {"role": m.role, "content": m.content}
         for m in _load_messages(db, thread.id)[-12:]
     ]
-    reply = generate_assistant_reply(body.content, history) or _MOCK_ASSISTANT_REPLY
+    generated = generate_assistant_reply(body.content, history)
+    if generated:
+        reply = generated
+    elif is_openai_configured():
+        reply = _MOCK_API_FAIL
+    else:
+        reply = _MOCK_NO_KEY
 
     user_msg = AiMessage(thread_id=thread.id, role="user", content=body.content)
     assistant_msg = AiMessage(thread_id=thread.id, role="assistant", content=reply)
     db.add(user_msg)
     db.add(assistant_msg)
+
+    # 첫 사용자 메시지로 제목 갱신
+    if not history and (not thread.title or thread.title in {"새 대화", "New chat"}):
+        text = body.content.strip().replace("\n", " ")
+        thread.title = (text[:40] + "…") if len(text) > 40 else (text or thread.title)
+
     thread.updated_at = utcnow()
     db.commit()
     db.refresh(user_msg)

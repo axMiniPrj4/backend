@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -7,13 +5,14 @@ from sqlalchemy.orm import Session
 from app.core import token_store
 from app.core.deps import get_current_user
 from app.core.errors import ErrorCode, bad_request, conflict
-from app.core.pagination import DEFAULT_SIZE, MAX_SIZE
+from app.core.pagination import DEFAULT_SIZE, MAX_SIZE, paginate, parse_page_params
 from app.core.security import hash_password, verify_password
-from app.db.base import utcnow
 from app.db.session import get_db
-from app.models import LoginHistory, User
+from app.models import LoginHistory, Payment, User
+from app.models.payment import PaymentMethod
 from app.models.user import UserPlan
 from app.schemas.common import PageResponse
+from app.schemas.payment import PaymentResponse
 from app.schemas.user import (
     LoginHistoryResponse,
     PasswordChangeRequest,
@@ -21,11 +20,10 @@ from app.schemas.user import (
     UserResponse,
     UserUpdateRequest,
 )
+from app.services.payment_service import apply_plan_change
 from app.services.user_service import apply_lazy_plan_expiry, withdraw_user
 
 router = APIRouter(prefix="/api/users", tags=["User"])
-
-PRO_DURATION_DAYS = 30  # 기준안 #8: PRO 전환 시점 + 30일
 
 
 @router.get("/me", response_model=UserResponse)
@@ -94,16 +92,29 @@ def list_login_history(
 def update_plan(body: PlanUpdateRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if body.plan not in (UserPlan.FREE, UserPlan.PRO):
         raise bad_request(ErrorCode.INVALID_PLAN, f"유효하지 않은 요금제입니다: {body.plan}")
-    if body.plan == UserPlan.PRO:
-        # PRO 재호출 = 재구독 (만료일 갱신)
-        user.plan = UserPlan.PRO
-        user.plan_expires_at = utcnow() + timedelta(days=PRO_DURATION_DAYS)
-    else:
-        # FREE 전환 = 즉시 해지
-        user.plan = UserPlan.FREE
-        user.plan_expires_at = None
+    apply_plan_change(
+        db,
+        user,
+        next_plan=body.plan,
+        method=PaymentMethod.CARD_MOCK,
+        payer_name=body.payer_name,
+        payer_email=str(body.payer_email) if body.payer_email else None,
+    )
     db.commit()
+    db.refresh(user)
     return user
+
+
+@router.get("/me/payments", response_model=PageResponse[PaymentResponse])
+def list_my_payments(
+    page: int = Query(1),
+    size: int = Query(DEFAULT_SIZE),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    params = parse_page_params(page, size, "created_at,desc", {"created_at"})
+    stmt = select(Payment).where(Payment.user_id == user.id)
+    return paginate(db, stmt, Payment, params)
 
 
 @router.delete("/me", status_code=204)

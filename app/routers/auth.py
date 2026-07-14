@@ -61,12 +61,16 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)):
 
 
 def _record_login(db: Session, request: Request, user_id: int, success: bool):
-    """로그인 시도 적재 — 프록시 경유 시 X-Forwarded-For 첫 IP가 실제 클라이언트."""
+    """로그인 시도 적재 — 프록시 경유 시 X-Forwarded-For 첫 IP가 실제 클라이언트.
+    이력 테이블 부재/DB 오류는 로그인 자체를 막지 않도록 soft-fail."""
     xff = request.headers.get("X-Forwarded-For")
     ip = xff.split(",")[0].strip() if xff else (request.client.host if request.client else None)
     user_agent = (request.headers.get("User-Agent") or "")[:255] or None
-    db.add(LoginHistory(user_id=user_id, ip=ip, user_agent=user_agent, success=success))
-    db.commit()
+    try:
+        db.add(LoginHistory(user_id=user_id, ip=ip, user_agent=user_agent, success=success))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -77,6 +81,9 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
         if user is not None:  # 미존재 아이디는 적재 대상 아님 (LoginHistory docstring 참고)
             _record_login(db, request, user.id, success=False)
         raise unauthorized(ErrorCode.INVALID_CREDENTIALS, "아이디 또는 비밀번호가 올바르지 않습니다.")
+    if getattr(user, "is_suspended", False):
+        _record_login(db, request, user.id, success=False)
+        raise unauthorized(ErrorCode.INVALID_CREDENTIALS, "정지된 계정입니다. 관리자에게 문의하세요.")
     _record_login(db, request, user.id, success=True)
     apply_lazy_plan_expiry(db, user)
     access_token = create_access_token(user.id)

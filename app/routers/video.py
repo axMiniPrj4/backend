@@ -1,13 +1,18 @@
+import json
+import logging
 from time import time
 from threading import Lock
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import ProjectContext, get_project_context
+from app.core.errors import AppError
+from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.base import utcnow
-from app.db.session import get_db
-from app.models import VideoSession
+from app.db.session import SessionLocal, get_db
+from app.models import Project, ProjectMember, User, VideoSession
 from app.schemas.collaboration import (
     VideoPeerIn,
     VideoPeerOut,
@@ -16,6 +21,9 @@ from app.schemas.collaboration import (
     VideoSignalIn,
     VideoSignalOut,
 )
+from app.services.video_hub import VideoPeerConn, video_hub
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects/{project_id}/video", tags=["Video"])
 
@@ -101,6 +109,14 @@ def update_video_session(
     db.commit()
     db.refresh(session)
     return session
+
+
+@router.get("/live-peers")
+async def list_live_video_peers(ctx: ProjectContext = Depends(get_project_context)):
+    """WebRTC WS 허브에 실제로 접속 중인 peer 목록 (로비용)."""
+    _ = ctx
+    peers = await video_hub.list_peers(ctx.project.id)
+    return {"peers": peers, "count": len(peers)}
 
 
 @router.get("/peers", response_model=list[VideoPeerOut])
@@ -190,3 +206,163 @@ def drain_video_signals(
         messages = bucket.get(peer_id, [])
         bucket[peer_id] = []
     return [VideoSignalOut(**m) for m in messages]
+
+
+def _sync_session_live_flag_ws(project_id: int, live: bool) -> None:
+    db = SessionLocal()
+    try:
+        session = _get_or_create_session(db, project_id)
+        session.joined = live
+        if live and session.started_at is None:
+            session.started_at = utcnow()
+        if not live:
+            session.started_at = None
+            session.muted = False
+            session.camera_off = False
+        db.commit()
+    except Exception:
+        logger.exception("video session sync failed project=%s", project_id)
+    finally:
+        db.close()
+
+
+@router.websocket("/ws")
+async def video_signaling_ws(
+    websocket: WebSocket,
+    project_id: int,
+    token: str = Query(...),
+    peer_id: str = Query(..., min_length=1, max_length=120),
+    nickname: str = Query(default="", max_length=100),
+    muted: bool = Query(default=False),
+    camera_off: bool = Query(default=False),
+):
+    """WebRTC 시그널링 전용 WebSocket — offer/answer/candidate 실시간 중계."""
+    db = SessionLocal()
+    joined = False
+    try:
+        try:
+            user_id = decode_token(token, TOKEN_TYPE_ACCESS)
+        except AppError:
+            await websocket.close(code=4401)
+            return
+
+        user = db.get(User, user_id)
+        if user is None or user.is_deleted or user.is_suspended:
+            await websocket.close(code=4401)
+            return
+
+        project = db.get(Project, project_id)
+        if project is None or project.is_deleted:
+            await websocket.close(code=4404)
+            return
+
+        member = db.scalar(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+            )
+        )
+        if member is None:
+            await websocket.close(code=4403)
+            return
+
+        await websocket.accept()
+        display_name = (nickname or user.nickname or "").strip() or user.nickname
+        peer = VideoPeerConn(
+            websocket=websocket,
+            peer_id=peer_id,
+            user_id=user.id,
+            nickname=display_name,
+            muted=muted,
+            camera_off=camera_off,
+        )
+        peers = await video_hub.join(project_id, peer)
+        joined = True
+        _sync_session_live_flag_ws(project_id, True)
+
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "projectId": project_id,
+                    "peerId": peer_id,
+                    "peers": [p for p in peers if p["peerId"] != peer_id],
+                },
+                ensure_ascii=False,
+            )
+        )
+        await video_hub.broadcast(
+            project_id,
+            {
+                "type": "peer-joined",
+                "projectId": project_id,
+                "peer": {
+                    "peerId": peer_id,
+                    "nickname": display_name,
+                    "muted": muted,
+                    "cameraOff": camera_off,
+                    "userId": user.id,
+                },
+            },
+            exclude_peer_id=peer_id,
+        )
+
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = message.get("type")
+            if msg_type == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            if msg_type == "presence":
+                peers = await video_hub.update_meta(
+                    project_id,
+                    peer_id,
+                    nickname=message.get("nickname"),
+                    muted=message.get("muted"),
+                    camera_off=message.get("cameraOff"),
+                )
+                me = next((p for p in peers if p["peerId"] == peer_id), None)
+                if me:
+                    await video_hub.broadcast(
+                        project_id,
+                        {"type": "peer-updated", "projectId": project_id, "peer": me},
+                        exclude_peer_id=peer_id,
+                    )
+                continue
+
+            if msg_type == "signal":
+                to_peer_id = message.get("toPeerId")
+                signal_type = message.get("signalType")
+                payload = message.get("payload") or {}
+                if not to_peer_id or signal_type not in {"offer", "answer", "candidate", "bye"}:
+                    continue
+                await video_hub.send_to(
+                    project_id,
+                    to_peer_id,
+                    {
+                        "type": "signal",
+                        "fromPeerId": peer_id,
+                        "signalType": signal_type,
+                        "payload": payload,
+                    },
+                )
+                continue
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("video ws error project=%s peer=%s", project_id, peer_id)
+    finally:
+        db.close()
+        if joined:
+            peers = await video_hub.leave(project_id, peer_id)
+            await video_hub.broadcast(
+                project_id,
+                {"type": "peer-left", "projectId": project_id, "peerId": peer_id},
+            )
+            _sync_session_live_flag_ws(project_id, len(peers) > 0)

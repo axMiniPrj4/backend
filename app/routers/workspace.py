@@ -1,11 +1,15 @@
-from fastapi import APIRouter, Depends
+import json
+import logging
+
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import ProjectContext, get_current_user, get_project_context
-from app.core.errors import conflict, forbidden, not_found
-from app.db.session import get_db
-from app.models import ProjectMember, User, WorkspaceFile, WorkspaceFileVersion
+from app.core.errors import AppError, conflict, forbidden, not_found
+from app.core.security import TOKEN_TYPE_ACCESS, decode_token
+from app.db.session import SessionLocal, get_db
+from app.models import Project, ProjectMember, User, WorkspaceFile, WorkspaceFileVersion
 from app.schemas.collaboration import (
     WorkspaceFileCreate,
     WorkspaceFileOut,
@@ -13,6 +17,9 @@ from app.schemas.collaboration import (
     WorkspaceFileUpdate,
     WorkspaceFileVersionOut,
 )
+from app.services.workspace_hub import WorkspacePeer, workspace_hub
+
+logger = logging.getLogger(__name__)
 
 project_router = APIRouter(prefix="/api/projects/{project_id}/workspace", tags=["Workspace"])
 file_router = APIRouter(prefix="/api/workspace/files", tags=["Workspace"])
@@ -154,3 +161,152 @@ def restore_workspace_file_version(
     db.commit()
     db.refresh(file)
     return file
+
+
+@project_router.websocket("/ws")
+async def workspace_ws(
+    websocket: WebSocket,
+    project_id: int,
+    token: str = Query(...),
+    client_id: str = Query(...),
+):
+    """편집 중 실시간 동기화 + presence. 토큰은 query 로 전달."""
+    db = SessionLocal()
+    peer: WorkspacePeer | None = None
+    try:
+        try:
+            user_id = decode_token(token, TOKEN_TYPE_ACCESS)
+        except AppError:
+            await websocket.close(code=4401)
+            return
+
+        user = db.get(User, user_id)
+        if user is None or user.is_deleted or user.is_suspended:
+            await websocket.close(code=4401)
+            return
+
+        project = db.get(Project, project_id)
+        if project is None or project.is_deleted:
+            await websocket.close(code=4404)
+            return
+
+        member = db.scalar(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+            )
+        )
+        if member is None:
+            await websocket.close(code=4403)
+            return
+
+        await websocket.accept()
+        peer = WorkspacePeer(
+            websocket=websocket,
+            user_id=user.id,
+            nickname=user.nickname,
+            client_id=client_id,
+        )
+        presence = await workspace_hub.join(project_id, peer)
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "projectId": project_id,
+                    "clientId": client_id,
+                    "presence": presence,
+                },
+                ensure_ascii=False,
+            )
+        )
+        await workspace_hub.broadcast(
+            project_id,
+            {"type": "presence", "projectId": project_id, "presence": presence},
+            exclude_client_id=client_id,
+        )
+
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = message.get("type")
+            if msg_type == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            if msg_type == "editing":
+                file_id = message.get("fileId")
+                try:
+                    editing_id = int(file_id) if file_id is not None else None
+                except (TypeError, ValueError):
+                    editing_id = None
+                presence = await workspace_hub.set_editing(project_id, client_id, editing_id)
+                await workspace_hub.broadcast(
+                    project_id,
+                    {"type": "presence", "projectId": project_id, "presence": presence},
+                )
+                continue
+
+            if msg_type == "content-change":
+                file_id = message.get("fileId")
+                content = message.get("content")
+                if file_id is None or not isinstance(content, str):
+                    continue
+                try:
+                    file_id_int = int(file_id)
+                except (TypeError, ValueError):
+                    continue
+                await workspace_hub.broadcast(
+                    project_id,
+                    {
+                        "type": "content-change",
+                        "projectId": project_id,
+                        "fileId": file_id_int,
+                        "content": content,
+                        "clientId": client_id,
+                        "userId": user.id,
+                        "nickname": user.nickname,
+                        "ts": message.get("ts"),
+                    },
+                    exclude_client_id=client_id,
+                )
+                continue
+
+            if msg_type in {"file-saved", "file-updated", "files-changed"}:
+                outbound = {
+                    "type": msg_type,
+                    "projectId": project_id,
+                    "fileId": message.get("fileId"),
+                    "content": message.get("content"),
+                    "version": message.get("version"),
+                    "ts": message.get("ts"),
+                    "clientId": client_id,
+                    "userId": user.id,
+                    "nickname": user.nickname,
+                }
+                if msg_type != "files-changed":
+                    try:
+                        outbound["fileId"] = int(message["fileId"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                await workspace_hub.broadcast(
+                    project_id,
+                    outbound,
+                    exclude_client_id=client_id,
+                )
+                continue
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("workspace ws error project=%s", project_id)
+    finally:
+        db.close()
+        if peer is not None:
+            presence = await workspace_hub.leave(project_id, client_id)
+            await workspace_hub.broadcast(
+                project_id,
+                {"type": "presence", "projectId": project_id, "presence": presence},
+            )

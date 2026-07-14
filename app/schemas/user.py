@@ -72,6 +72,8 @@ class PasswordChangeRequest(BaseModel):
 
 class PlanUpdateRequest(BaseModel):
     plan: str
+    payer_name: str | None = Field(default=None, max_length=100)
+    payer_email: EmailStr | None = None
 
 
 class UserResponse(ORMModel):
@@ -84,6 +86,24 @@ class UserResponse(ORMModel):
     plan: str
     plan_expires_at: datetime | None
     created_at: datetime
+    is_suspended: bool = False
+
+
+class AdminUserUpdateRequest(BaseModel):
+    """관리자용 회원 프로필 수정."""
+
+    nickname: str | None = Field(default=None, min_length=1, max_length=30)
+    email: EmailStr | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=50)
+    plan: str | None = None
+
+
+class AdminPasswordResetRequest(BaseModel):
+    """관리자용 타인 비밀번호 리셋."""
+
+    new_password: str
+
+    _pw = field_validator("new_password")(validate_password)
 
 
 class AvailabilityResponse(BaseModel):

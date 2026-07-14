@@ -10,6 +10,7 @@ class ChatMessageCreate(BaseModel):
     content: str | None = None
     image_data: str | None = None
     file_name: str | None = None
+    client_id: str | None = None
 
 
 class ChatMessageOut(ORMModel):
@@ -29,6 +30,7 @@ class WhiteboardUpdate(BaseModel):
     custom_width: int = 1280
     custom_height: int = 720
     zoom: float = 1.0
+    client_id: str | None = None
 
 
 class WhiteboardOut(ORMModel):
@@ -76,10 +78,14 @@ class WorkspaceFileVersionOut(ORMModel):
 
 
 class ErdUpdate(BaseModel):
-    dbml: str = ""
-    positions: dict = Field(default_factory=dict)
-    zoom: float = 1.0
-    split_percent: int = 36
+    """부분 갱신 + 낙관적 잠금. unset 필드는 변경하지 않음 (stale dbml 덮어쓰기 방지)."""
+
+    base_updated_at: datetime | None = None
+    dbml: str | None = None
+    positions: dict | None = None
+    zoom: float | None = None
+    split_percent: int | None = None
+    client_id: str | None = None
 
 
 class ErdOut(ORMModel):

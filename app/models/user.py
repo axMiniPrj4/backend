@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, BigIntPK, SoftDeleteMixin, TimestampMixin
@@ -14,6 +14,8 @@ class UserRole:
 class UserPlan:
     FREE = "FREE"
     PRO = "PRO"
+
+    ALL = {FREE, PRO}
 
 
 class User(Base, TimestampMixin, SoftDeleteMixin):
@@ -32,3 +34,5 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     # 가입 시 필수 동의 기록 (감사 목적 — 시드 등 예외 경로는 NULL 가능)
     terms_agreed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     privacy_agreed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 관리자 정지 — SoftDelete와 별개 (로그인 차단만)
+    is_suspended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
