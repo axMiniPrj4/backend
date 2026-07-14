@@ -24,10 +24,17 @@ class DocVersionResponse(ORMModel):
 
 class DocResponse(BaseModel):
     id: int
-    project_id: int
+    project_id: int | None  # NULL = 공통 자료
     user_id: int
     title: str
     content: str | None
     created_at: datetime
     updated_at: datetime
     latest_version: DocVersionResponse | None
+
+
+class ArchiveDocResponse(DocResponse):
+    """전역 자료실 목록/상세용 — 소속 프로젝트 이름 포함 (공통 자료는 NULL)."""
+
+    project_name: str | None = None
+    author_nickname: str

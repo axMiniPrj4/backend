@@ -1,6 +1,6 @@
--- 오합지졸.io schema.sql v1.3
+-- 오합지졸.io schema.sql v1.4
 -- 생성 기준: app/models (SQLAlchemy) — 실제 반영은 Alembic 마이그레이션 사용
--- 변경: task_comment/comment_like, notice 추가
+-- 변경: doc.project_id NULL 허용 (공통 자료)
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE user (
@@ -102,7 +102,7 @@ CREATE INDEX ix_project_todo_project_deleted ON project_todo (project_id, delete
 
 CREATE TABLE doc (
 	id BIGINT NOT NULL AUTO_INCREMENT, 
-	project_id BIGINT NOT NULL, 
+	project_id BIGINT, 
 	user_id BIGINT NOT NULL, 
 	title VARCHAR(200) NOT NULL, 
 	content TEXT, 

@@ -319,6 +319,70 @@ def test_docs_and_versions(client):
     assert client.get(f"{url}/{S['doc_id']}", headers=_auth(S["member_at"])).status_code == 404
 
 
+# ---------- 전역 자료실 (공통 자료 + 내 프로젝트 자료) ----------
+
+def test_archive(client):
+    # 프로젝트 자료 1건 생성 (멤버 전용 자료)
+    r = client.post(
+        f"/api/projects/{S['pid']}/docs",
+        data={"title": "프로젝트 전용 문서"},
+        files={"file": ("proj.png", io.BytesIO(PNG), "image/png")},
+        headers=_auth(S["leader_at"]),
+    )
+    assert r.status_code == 201
+    proj_doc_id = r.json()["id"]
+
+    # 공통 자료 등록 — 로그인 사용자 누구나 (비멤버 other3도 가능)
+    r = client.post(
+        "/api/archive",
+        data={"title": "전체 공지 템플릿", "content": "모두 사용"},
+        files={"file": ("common.png", io.BytesIO(PNG), "image/png")},
+        headers=_auth(S["other_at"]),
+    )
+    assert r.status_code == 201, r.text
+    common = r.json()
+    assert common["project_id"] is None and common["project_name"] is None
+    assert common["latest_version"]["version_no"] == 1
+    common_id = common["id"]
+
+    # 전역 목록: 멤버는 공통+프로젝트 자료, 비멤버는 공통만
+    r = client.get("/api/archive", headers=_auth(S["member_at"]))
+    ids = [d["id"] for d in r.json()["items"]]
+    assert common_id in ids and proj_doc_id in ids
+    r = client.get("/api/archive", headers=_auth(S["other_at"]))
+    ids = [d["id"] for d in r.json()["items"]]
+    assert common_id in ids and proj_doc_id not in ids
+    # 필터: 공통만 / 제목 검색
+    assert client.get("/api/archive", params={"common_only": True}, headers=_auth(S["member_at"])).json()["total_elements"] == 1
+    assert client.get("/api/archive", params={"q": "템플릿"}, headers=_auth(S["other_at"])).json()["total_elements"] == 1
+
+    # 상세/다운로드 — 공통 자료는 누구나, 프로젝트 자료는 비멤버 403
+    assert client.get(f"/api/archive/{common_id}/file", headers=_auth(S["member_at"])).status_code == 200
+    assert client.get(f"/api/archive/{proj_doc_id}", headers=_auth(S["member_at"])).status_code == 200
+    assert client.get(f"/api/archive/{proj_doc_id}", headers=_auth(S["other_at"])).status_code == 403
+
+    # 공통 자료 수정/새 버전: 작성자(other3)만
+    assert client.patch(f"/api/archive/{common_id}", json={"title": "x"}, headers=_auth(S["member_at"])).status_code == 403
+    assert client.patch(f"/api/archive/{common_id}", json={"title": "전체 공지 템플릿 v2"}, headers=_auth(S["other_at"])).status_code == 200
+    r = client.post(f"/api/archive/{common_id}/versions", files={"file": ("c2.png", io.BytesIO(PNG + b"2"), "image/png")}, headers=_auth(S["member_at"]))
+    assert r.status_code == 403
+    r = client.post(f"/api/archive/{common_id}/versions", files={"file": ("c2.png", io.BytesIO(PNG + b"2"), "image/png")}, headers=_auth(S["other_at"]))
+    assert r.status_code == 201 and r.json()["version_no"] == 2
+    assert len(client.get(f"/api/archive/{common_id}/versions", headers=_auth(S["member_at"])).json()) == 2
+
+    # 프로젝트 자료도 전역 경로로 버전 업로드 가능 (멤버, 기존 정책)
+    r = client.post(f"/api/archive/{proj_doc_id}/versions", files={"file": ("p2.png", io.BytesIO(PNG), "image/png")}, headers=_auth(S["member_at"]))
+    assert r.status_code == 201
+
+    # 삭제: 작성자만 → 이후 404, 목록에서 제외
+    assert client.delete(f"/api/archive/{common_id}", headers=_auth(S["member_at"])).status_code == 403
+    assert client.delete(f"/api/archive/{common_id}", headers=_auth(S["other_at"])).status_code == 204
+    assert client.get(f"/api/archive/{common_id}", headers=_auth(S["other_at"])).status_code == 404
+    assert client.get("/api/archive", headers=_auth(S["other_at"])).json()["total_elements"] == 0
+    # 프로젝트 자료 정리 (이후 테스트 영향 방지)
+    assert client.delete(f"/api/projects/{S['pid']}/docs/{proj_doc_id}", headers=_auth(S["leader_at"])).status_code == 204
+
+
 # ---------- Inquiry / Answer / Admin ----------
 
 def test_inquiries_and_admin(client):
