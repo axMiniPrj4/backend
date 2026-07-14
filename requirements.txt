@@ -1,0 +1,15 @@
+alembic==1.18.5
+bcrypt==5.0.0
+cryptography==49.0.0
+fastapi==0.139.0
+httpx==0.28.1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+pyjwt==2.13.0
+pymysql==1.2.0
+pytest==9.1.1
+python-multipart==0.0.32
+redis==8.0.1
+sqlalchemy==2.0.51
+uvicorn==0.51.0
+email-validator==2.3.0
