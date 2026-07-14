@@ -6,3 +6,4 @@ uploads/
 test_uploads/
 *.db
 .pytest_cache/
+wrd.md
