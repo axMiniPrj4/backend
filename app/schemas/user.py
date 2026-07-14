@@ -88,3 +88,11 @@ class UserResponse(ORMModel):
 
 class AvailabilityResponse(BaseModel):
     available: bool
+
+
+class LoginHistoryResponse(ORMModel):
+    id: int
+    ip: str | None
+    user_agent: str | None
+    success: bool
+    created_at: datetime

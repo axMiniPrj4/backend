@@ -113,6 +113,22 @@ def test_change_password(client):
     assert r.status_code == 401
 
 
+def test_login_history(client):
+    # pwuser1의 누적 이력 (test_change_password에서): 성공 → 실패(변경 전 비밀번호) → 성공(새 비밀번호)
+    at = _login(client, "pwuser1", "newpass2@").json()["access_token"]  # 성공 +1 → 총 4건
+    r = client.get("/api/users/me/login-history", headers=_auth(at))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_elements"] == 4
+    assert [i["success"] for i in body["items"]] == [True, True, False, True]  # 최신순
+    assert body["items"][0]["ip"] and body["items"][0]["created_at"]
+
+    r = client.get("/api/users/me/login-history", params={"page": 2, "size": 3}, headers=_auth(at))
+    assert len(r.json()["items"]) == 1 and r.json()["total_pages"] == 2
+    r = client.get("/api/users/me/login-history", params={"size": 0}, headers=_auth(at))
+    assert r.status_code == 400
+
+
 def test_plan_switch(client):
     r = client.put("/api/users/me/plan", json={"plan": "BASIC"}, headers=_auth(S["leader_at"]))
     assert r.status_code == 400 and r.json()["code"] == "INVALID_PLAN"

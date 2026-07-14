@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,7 @@ from app.core.security import (
 )
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.models import User
+from app.models import LoginHistory, User
 from app.schemas.user import (
     AvailabilityResponse,
     LoginRequest,
@@ -57,12 +57,24 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)):
     return user
 
 
+def _record_login(db: Session, request: Request, user_id: int, success: bool):
+    """로그인 시도 적재 — 프록시 경유 시 X-Forwarded-For 첫 IP가 실제 클라이언트."""
+    xff = request.headers.get("X-Forwarded-For")
+    ip = xff.split(",")[0].strip() if xff else (request.client.host if request.client else None)
+    user_agent = (request.headers.get("User-Agent") or "")[:255] or None
+    db.add(LoginHistory(user_id=user_id, ip=ip, user_agent=user_agent, success=success))
+    db.commit()
+
+
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.login_id == body.login_id))
     # 계정 존재 여부 비노출 — 아이디/비밀번호 오류 모두 동일 401
     if user is None or not verify_password(body.password, user.password_hash):
+        if user is not None:  # 미존재 아이디는 적재 대상 아님 (LoginHistory docstring 참고)
+            _record_login(db, request, user.id, success=False)
         raise unauthorized(ErrorCode.INVALID_CREDENTIALS, "아이디 또는 비밀번호가 올바르지 않습니다.")
+    _record_login(db, request, user.id, success=True)
     apply_lazy_plan_expiry(db, user)
     access_token = create_access_token(user.id)
     refresh_token = create_refresh_token(user.id)

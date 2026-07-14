@@ -1,6 +1,6 @@
--- 오합지졸.io schema.sql v1.5
+-- 오합지졸.io schema.sql v1.6
 -- 생성 기준: app/models (SQLAlchemy) — 실제 반영은 Alembic 마이그레이션 사용
--- 변경: user.terms_agreed_at / privacy_agreed_at 추가 (가입 필수 동의 기록)
+-- 변경: login_history 테이블 추가 (로그인 시도 기록)
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE user (
@@ -19,10 +19,23 @@ CREATE TABLE user (
 	updated_at DATETIME NOT NULL, 
 	deleted_at DATETIME, 
 	PRIMARY KEY (id), 
-	UNIQUE (login_id), 
-	UNIQUE (nickname), 
+	UNIQUE (login_id),
+	UNIQUE (nickname),
 	UNIQUE (email)
 );
+
+CREATE TABLE login_history (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	user_id BIGINT NOT NULL,
+	ip VARCHAR(45),
+	user_agent VARCHAR(255),
+	success BOOL NOT NULL,
+	created_at DATETIME NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(user_id) REFERENCES user (id)
+);
+
+CREATE INDEX ix_login_history_user_id ON login_history (user_id);
 
 CREATE TABLE project (
 	id BIGINT NOT NULL AUTO_INCREMENT, 

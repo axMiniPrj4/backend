@@ -1,18 +1,26 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import token_store
 from app.core.deps import get_current_user
 from app.core.errors import ErrorCode, bad_request, conflict
+from app.core.pagination import DEFAULT_SIZE, MAX_SIZE
 from app.core.security import hash_password, verify_password
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.models import User
+from app.models import LoginHistory, User
 from app.models.user import UserPlan
-from app.schemas.user import PasswordChangeRequest, PlanUpdateRequest, UserResponse, UserUpdateRequest
+from app.schemas.common import PageResponse
+from app.schemas.user import (
+    LoginHistoryResponse,
+    PasswordChangeRequest,
+    PlanUpdateRequest,
+    UserResponse,
+    UserUpdateRequest,
+)
 from app.services.user_service import apply_lazy_plan_expiry, withdraw_user
 
 router = APIRouter(prefix="/api/users", tags=["User"])
@@ -50,6 +58,36 @@ def change_password(body: PasswordChangeRequest, user: User = Depends(get_curren
     db.commit()
     # 다른 기기 세션 차단 — RT 폐기 (보유한 AT는 만료까지 유효)
     token_store.delete_refresh_token(user.id)
+
+
+@router.get("/me/login-history", response_model=PageResponse[LoginHistoryResponse])
+def list_login_history(
+    page: int = Query(1),
+    size: int = Query(DEFAULT_SIZE),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """본인 로그인 이력 — 성공/실패 포함 최신순."""
+    if page < 1 or size < 1 or size > MAX_SIZE:
+        raise bad_request(message=f"page는 1 이상, size는 1~{MAX_SIZE} 사이여야 합니다.")
+    filters = [LoginHistory.user_id == user.id]
+    total = db.scalar(select(func.count()).select_from(LoginHistory).where(*filters)) or 0
+    items = list(
+        db.scalars(
+            select(LoginHistory)
+            .where(*filters)
+            .order_by(LoginHistory.created_at.desc(), LoginHistory.id.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+    )
+    return {
+        "items": items,
+        "page": page,
+        "size": size,
+        "total_elements": total,
+        "total_pages": (total + size - 1) // size,
+    }
 
 
 @router.put("/me/plan", response_model=UserResponse)
