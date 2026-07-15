@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, Date, ForeignKey, Index, String, Table, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Index, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, BigIntPK, SoftDeleteMixin, TimestampMixin
+from app.db.base import Base, BigIntPK, SoftDeleteMixin, TimestampMixin, utcnow
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -16,6 +16,14 @@ class TaskStatus:
     DONE = "DONE"
 
     ALL = {TODO, IN_PROGRESS, DONE}
+
+
+class TaskPriority:
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+    ALL = {LOW, MEDIUM, HIGH}
 
 
 # 담당자 다중 선택 — Hard Delete (재지정 시 행 교체)
@@ -47,10 +55,10 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
     creator_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # WBS: 구분(category) / 작업(work_group) — 세부작업은 title
     category: Mapped[str] = mapped_column(String(50), nullable=False, default="기타")
     work_group: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    priority: Mapped[str] = mapped_column(String(10), nullable=False, default=TaskPriority.MEDIUM)
 
     creator: Mapped["User"] = relationship(foreign_keys=[creator_id])
     assignees: Mapped[list["User"]] = relationship(secondary=task_assignee, order_by="User.id")
@@ -60,13 +68,34 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
         return [u.id for u in self.assignees]
 
 
+class TaskHistory(Base):
+    """Task 상태·담당 변경 타임라인."""
+
+    __tablename__ = "task_history"
+    __table_args__ = (Index("ix_task_history_task_created", "task_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("task.id"), nullable=False)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    actor: Mapped["User"] = relationship()
+
+    @property
+    def actor_nickname(self) -> str:
+        return self.actor.nickname
+
+
 class TaskComment(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "task_comment"
     __table_args__ = (Index("ix_task_comment_task_deleted", "task_id", "deleted_at"),)
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("task.id"), nullable=False)
-    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)  # 작성자
+    user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
     content: Mapped[str] = mapped_column(String(1000), nullable=False)
 
     author: Mapped["User"] = relationship()

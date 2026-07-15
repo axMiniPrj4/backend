@@ -6,22 +6,31 @@ from app.core.deps import ProjectContext, get_project_context
 from app.core.errors import ErrorCode, bad_request, forbidden, not_found
 from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.db.session import get_db
-from app.models import ProjectMember, Task, User
-from app.models.task import TaskStatus
+from app.models import ProjectMember, Task, TaskHistory, User
+from app.models.task import TaskPriority, TaskStatus
 from app.schemas.common import PageResponse
 from app.schemas.task import (
     GanttResponse,
     GanttTaskItem,
     TaskAssigneeResponse,
     TaskCreateRequest,
+    TaskHistoryResponse,
     TaskResponse,
     TaskStatusUpdateRequest,
     TaskUpdateRequest,
 )
+from app.services.notifications import notify_task_assigned, notify_task_status
+from app.services.task_history import add_task_history
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["Task"])
 
-_SORT_FIELDS = {"created_at", "title", "status", "start_date", "end_date"}
+_SORT_FIELDS = {"created_at", "title", "status", "start_date", "end_date", "priority"}
+
+_STATUS_LABEL = {
+    TaskStatus.TODO: "할 일",
+    TaskStatus.IN_PROGRESS: "진행 중",
+    TaskStatus.DONE: "완료",
+}
 
 
 def _validate_dates(start, end, project=None):
@@ -97,9 +106,26 @@ def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_proje
         category=(body.category or "기타").strip() or "기타",
         work_group=(body.work_group or "").strip(),
         color=body.color,
+        priority=body.priority or TaskPriority.MEDIUM,
     )
     db.add(task)
+    db.flush()
+    add_task_history(
+        db,
+        task=task,
+        actor_id=ctx.user.id,
+        event_type="CREATED",
+        message=f"{ctx.user.nickname}님이 작업을 생성했습니다.",
+    )
+    notify_task_assigned(
+        db,
+        task=task,
+        actor_id=ctx.user.id,
+        actor_nickname=ctx.user.nickname,
+        new_assignee_ids=[u.id for u in assignees],
+    )
     db.commit()
+    db.refresh(task)
     return task
 
 
@@ -141,6 +167,8 @@ def update_task(
     if not (ctx.is_leader or task.creator_id == ctx.user.id):
         raise forbidden("작성자 또는 팀장만 수정할 수 있습니다.")
     data = body.model_dump(exclude_unset=True)
+    prev_assignee_ids = set(task.assignee_ids)
+    prev_priority = task.priority
     if "assignee_ids" in data:
         ids = data.pop("assignee_ids")
         if not ids:
@@ -153,7 +181,42 @@ def update_task(
     for field, value in data.items():
         setattr(task, field, value)
     _validate_dates(task.start_date, task.end_date, ctx.project)
+    added = [uid for uid in task.assignee_ids if uid not in prev_assignee_ids]
+    if added:
+        notify_task_assigned(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            actor_nickname=ctx.user.nickname,
+            new_assignee_ids=added,
+        )
+        names = ", ".join(u.nickname for u in task.assignees if u.id in added)
+        add_task_history(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            event_type="ASSIGNED",
+            message=f"{ctx.user.nickname}님이 담당자를 추가했습니다: {names}",
+        )
+    removed = prev_assignee_ids - set(task.assignee_ids)
+    if removed:
+        add_task_history(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            event_type="UNASSIGNED",
+            message=f"{ctx.user.nickname}님이 담당자를 변경했습니다.",
+        )
+    if "priority" in body.model_dump(exclude_unset=True) and task.priority != prev_priority:
+        add_task_history(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            event_type="PRIORITY",
+            message=f"{ctx.user.nickname}님이 우선순위를 {prev_priority} → {task.priority}(으)로 변경했습니다.",
+        )
     db.commit()
+    db.refresh(task)
     return task
 
 
@@ -168,9 +231,52 @@ def update_task_status(
     # ④ 상태 변경 권한: 담당자 중 한 명 또는 LEADER (수정과 주체가 달라 엔드포인트 분리)
     if not (ctx.is_leader or ctx.user.id in task.assignee_ids):
         raise forbidden("담당자 또는 팀장만 상태를 변경할 수 있습니다.")
+    if body.status == TaskStatus.DONE and not task.assignee_ids:
+        raise bad_request(
+            ErrorCode.VALIDATION_ERROR,
+            "담당자가 없는 작업은 완료로 변경할 수 없습니다.",
+        )
+    prev_status = task.status
     task.status = body.status
+    if body.status != prev_status:
+        notify_task_status(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            actor_nickname=ctx.user.nickname,
+            new_status=body.status,
+        )
+        add_task_history(
+            db,
+            task=task,
+            actor_id=ctx.user.id,
+            event_type="STATUS",
+            message=(
+                f"{ctx.user.nickname}님이 상태를 "
+                f"{_STATUS_LABEL.get(prev_status, prev_status)} → "
+                f"{_STATUS_LABEL.get(body.status, body.status)}(으)로 변경했습니다."
+            ),
+        )
     db.commit()
+    db.refresh(task)
     return task
+
+
+@router.get("/tasks/{task_id}/history", response_model=list[TaskHistoryResponse])
+def list_task_history(
+    task_id: int,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    task = _get_task(db, ctx, task_id)
+    rows = db.scalars(
+        select(TaskHistory)
+        .where(TaskHistory.task_id == task.id)
+        .options(selectinload(TaskHistory.actor))
+        .order_by(TaskHistory.created_at.desc(), TaskHistory.id.desc())
+        .limit(50)
+    ).all()
+    return list(rows)
 
 
 @router.delete("/tasks/{task_id}", status_code=204)
@@ -206,6 +312,7 @@ def get_gantt(ctx: ProjectContext = Depends(get_project_context), db: Session = 
                 start_date=t.start_date,
                 end_date=t.end_date,
                 status=t.status,
+                priority=t.priority or TaskPriority.MEDIUM,
                 category=t.category or "기타",
                 work_group=t.work_group or "",
                 color=t.color,

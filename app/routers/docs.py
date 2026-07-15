@@ -124,6 +124,8 @@ def update_doc(
     doc = _get_doc(db, ctx, doc_id)
     _require_author_or_leader(ctx, doc, "수정")
     data = body.model_dump(exclude_unset=True)
+    # 프로젝트 스코프 API에서는 소속 이동 불가 (전역 /archive PATCH 사용)
+    data.pop("project_id", None)
     for field, value in data.items():
         setattr(doc, field, value)
     db.commit()

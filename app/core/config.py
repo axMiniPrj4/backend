@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # 파일 업로드
     upload_dir: str = "./uploads"
-    max_file_size: int = 20 * 1024 * 1024  # 20MB
+    max_file_size: int = 50 * 1024 * 1024  # 50MB
 
     # CORS
     cors_origins: str = "*"  # 콤마 구분 목록

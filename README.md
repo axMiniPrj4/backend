@@ -9,6 +9,21 @@
 
 Python 3.12 · FastAPI · SQLAlchemy 2.0 / Alembic · MySQL 8 · Redis(Refresh Token) · JWT(Access 30분/Refresh 7일) · Pydantic v2 · (선택) OpenAI · 협업 WS(in-memory hub)
 
+## 2026-07-16 업데이트 — 협업 루프·Task·자료실·런타임 RDS
+
+브랜치 `feature/bsk/26.07.15` 기준.
+
+| 영역 | 내용 |
+|------|------|
+| 알림 | `notification` 테이블 + `/api/notifications*` , Task 담당/상태/댓글 훅 |
+| My Work / 검색 | `GET /api/users/me/tasks`, `GET /api/search` |
+| Task | `priority`, DONE 담당자 필수, `task_history`, 투두→Task `promote` |
+| 투두 | priority·설명·기간·color·`IN_PROGRESS` |
+| 자료실 | `project_id` 수정, 허용 확장자·50MB 확대 (`app/core/files.py`) |
+| DB 페일오버 | **부팅 + 런타임** Pi 장애 시 `RDS_DATABASE_URL`로 엔진 교체 (`app/db/session.py`) |
+
+마이그레이션: `a1b2c3d4e5f6`(notification), `b2c3d4e5f6a7`(priority·todo·history) — 운영 DB(Pi/RDS) 모두 `alembic upgrade head` 필요.
+
 ## 2026-07-15 업데이트 (AI 대화·구현)
 
 커밋 예: `267a99b` on `feature/bsk/26.07.15`.
@@ -52,13 +67,16 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 운영 중 라즈베리파이 DB가 일시적으로 응답하지 않는 상황을 겪고, 2차 DB(RDS)로 우회하는 안전망을 추가했습니다. (commit `59f7da5` on `feature/bsk/26.07.15`)
 
 - `app/core/config.py`: `RDS_DATABASE_URL` 설정 추가 (미설정 시 우회 없이 기존과 동일)
-- `app/db/session.py`: 서버 **기동 시점**에 1차 DB(`DATABASE_URL`) 연결을 먼저 시도(3초 타임아웃) → 실패하면 RDS로 자동 전환 → 둘 다 실패하면 기동 실패(기존과 동일)
-- 확인용 커넥션은 확인 직후 `dispose()`하여 SQLite 테스트 환경에서 파일 잠금이 남지 않도록 처리
+- `app/db/session.py`:
+  - **부팅:** 1차 DB(`DATABASE_URL`) 3초 타임아웃 연결 시도 → 실패 시 RDS
+  - **런타임(2026-07-16):** `get_db()`에서 연결 장애 감지 시 RDS로 엔진·`SessionLocal` 교체 (재시작 없이 전환)
+- `pool_pre_ping` + `connect_timeout=3`으로 불필요한 hang 완화
 
-**알려진 한계 (추가 작업 필요):**
-- **부팅 시 1회 판단**만 함 — 운영 중 1차 DB가 죽어도 재시작 전엔 자동으로 안 넘어가고, RDS로 넘어간 뒤 1차 DB가 복구돼도 자동으로 되돌아오지 않음
-- 1차 DB ↔ RDS 간 **실시간 복제/동기화 없음** — RDS는 특정 시점 스냅샷일 뿐이라, failover 시 그 이후 데이터는 유실됨
-- RDS는 반드시 `alembic upgrade head`로 스키마를 최신까지 맞춰둬야 함 (2026-07-15 기준 1회 실행 완료 — 이후 새 마이그레이션 추가 시 RDS에도 별도로 적용 필요)
+**알려진 한계:**
+- RDS로 넘어간 뒤 1차 DB가 복구돼도 **자동 failback 없음** (재시작 또는 수동 전환)
+- 1차 DB ↔ RDS 간 **실시간 복제/동기화 없음** — failover 시 스냅샷 차이로 데이터 공백 가능
+- RDS는 `alembic upgrade head`로 스키마를 맞춰둬야 함
+- WebSocket 경로의 `SessionLocal()` 직접 사용은 다음 연결부터 새 엔진을 탐 (진행 중 소켓은 제한적)
 
 ## 2026-07-15 추가 업데이트 — 공동작업 권한 레벨(뷰어/에디터)
 

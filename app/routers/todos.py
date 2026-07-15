@@ -6,7 +6,7 @@ from app.core.deps import get_current_user
 from app.core.errors import bad_request, not_found
 from app.db.session import get_db
 from app.models import Todo, User
-from app.models.todo import TodoStatus
+from app.models.todo import TodoPriority, TodoStatus
 from app.schemas.todo import TodoCreateRequest, TodoResponse, TodoUpdateRequest
 
 router = APIRouter(prefix="/api/todos", tags=["Todo"])
@@ -14,15 +14,29 @@ router = APIRouter(prefix="/api/todos", tags=["Todo"])
 
 def _get_my_todo(db: Session, user: User, todo_id: int) -> Todo:
     todo = db.scalar(select(Todo).where(Todo.id == todo_id))
-    # 타인의 개인 리소스 = 404 (존재 여부 비노출)
     if todo is None or todo.user_id != user.id:
         raise not_found("Todo를 찾을 수 없습니다.")
     return todo
 
 
+def _validate_todo_dates(start, end):
+    if start is not None and end is not None and start > end:
+        raise bad_request(message="시작일은 종료일보다 늦을 수 없습니다.")
+
+
 @router.post("", response_model=TodoResponse, status_code=201)
 def create_todo(body: TodoCreateRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    todo = Todo(user_id=user.id, content=body.content)
+    _validate_todo_dates(body.start_date, body.end_date)
+    todo = Todo(
+        user_id=user.id,
+        content=body.content,
+        priority=body.priority or TodoPriority.MEDIUM,
+        description=body.description,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        color=body.color,
+        status=body.status or TodoStatus.NOT_DONE,
+    )
     db.add(todo)
     db.commit()
     return todo
@@ -49,8 +63,8 @@ def update_todo(
     todo = _get_my_todo(db, user, todo_id)
     data = body.model_dump(exclude_unset=True)
     for field, value in data.items():
-        if value is not None:
-            setattr(todo, field, value)
+        setattr(todo, field, value)
+    _validate_todo_dates(todo.start_date, todo.end_date)
     db.commit()
     return todo
 

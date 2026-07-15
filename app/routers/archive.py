@@ -177,10 +177,25 @@ def update_archive_doc(
 ):
     doc = _get_accessible_doc(db, user, doc_id)
     _require_manage(db, user, doc, "수정")
-    for field, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+
+    if "project_id" in data:
+        new_pid = data.pop("project_id")
+        if new_pid is not None:
+            is_member = db.scalar(
+                select(ProjectMember.id).where(
+                    ProjectMember.project_id == new_pid, ProjectMember.user_id == user.id
+                )
+            )
+            if is_member is None:
+                raise forbidden("이동할 프로젝트의 멤버가 아닙니다.")
+        doc.project_id = new_pid
+
+    for field, value in data.items():
         setattr(doc, field, value)
     db.commit()
-    return _to_response(doc)
+    db.expire(doc)
+    return _to_response(_get_accessible_doc(db, user, doc.id))
 
 
 @router.delete("/{doc_id}", status_code=204)

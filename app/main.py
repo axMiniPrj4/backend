@@ -21,8 +21,10 @@ from app.routers import (
     inquiries,
     members,
     notices,
+    notifications,
     project_todos,
     projects,
+    search,
     task_comments,
     tasks,
     todos,
@@ -188,6 +190,8 @@ app.include_router(docs.router)
 app.include_router(archive.router)
 app.include_router(inquiries.router)
 app.include_router(notices.router)
+app.include_router(notifications.router)
+app.include_router(search.router)
 app.include_router(activities.router)
 app.include_router(chat.router)
 app.include_router(whiteboard.router)

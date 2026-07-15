@@ -8,10 +8,12 @@ from app.core.errors import ErrorCode, bad_request, conflict
 from app.core.pagination import DEFAULT_SIZE, MAX_SIZE, paginate, parse_page_params
 from app.core.security import hash_password, verify_password
 from app.db.session import get_db
-from app.models import LoginHistory, Payment, User
+from app.models import LoginHistory, Payment, Project, Task, User
 from app.models.payment import PaymentMethod
+from app.models.task import TaskStatus, task_assignee
 from app.models.user import UserPlan
 from app.schemas.common import PageResponse
+from app.schemas.my_work import MyTaskItem
 from app.schemas.payment import PaymentResponse
 from app.schemas.user import (
     LoginHistoryResponse,
@@ -115,6 +117,44 @@ def list_my_payments(
     params = parse_page_params(page, size, "created_at,desc", {"created_at"})
     stmt = select(Payment).where(Payment.user_id == user.id)
     return paginate(db, stmt, Payment, params)
+
+
+@router.get("/me/tasks", response_model=list[MyTaskItem])
+def list_my_tasks(
+    status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """내가 담당자로 지정된 프로젝트 Task 목록 (마감일 가까운 순)."""
+    if status is not None and status not in TaskStatus.ALL:
+        raise bad_request(message=f"status 필터는 {sorted(TaskStatus.ALL)} 중 하나여야 합니다.")
+
+    stmt = (
+        select(Task, Project.name)
+        .join(task_assignee, task_assignee.c.task_id == Task.id)
+        .join(Project, Project.id == Task.project_id)
+        .where(task_assignee.c.user_id == user.id)
+        .order_by(Task.end_date.asc(), Task.id.asc())
+        .limit(limit)
+    )
+    if status is not None:
+        stmt = stmt.where(Task.status == status)
+
+    rows = db.execute(stmt).all()
+    return [
+        MyTaskItem(
+            id=task.id,
+            project_id=task.project_id,
+            project_title=project_name,
+            title=task.title,
+            status=task.status,
+            start_date=task.start_date,
+            end_date=task.end_date,
+            color=task.color,
+        )
+        for task, project_name in rows
+    ]
 
 
 @router.delete("/me", status_code=204)

@@ -7,12 +7,17 @@ from app.core.errors import forbidden, not_found
 from app.db.session import get_db
 from app.models import Task, TaskComment
 from app.schemas.task import TaskCommentCreateRequest, TaskCommentResponse
+from app.services.notifications import notify_task_comment
 
 router = APIRouter(prefix="/api/projects/{project_id}/tasks/{task_id}/comments", tags=["TaskComment"])
 
 
 def _ensure_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
-    task = db.scalar(select(Task).where(Task.id == task_id, Task.project_id == ctx.project.id))
+    task = db.scalar(
+        select(Task)
+        .where(Task.id == task_id, Task.project_id == ctx.project.id)
+        .options(selectinload(Task.assignees))
+    )
     if task is None:
         raise not_found("업무를 찾을 수 없습니다.")
     return task
@@ -45,6 +50,14 @@ def create_comment(
     task = _ensure_task(db, ctx, task_id)
     comment = TaskComment(task_id=task.id, user_id=ctx.user.id, content=body.content)
     db.add(comment)
+    db.flush()
+    notify_task_comment(
+        db,
+        task=task,
+        actor_id=ctx.user.id,
+        actor_nickname=ctx.user.nickname,
+        comment_preview=body.content,
+    )
     db.commit()
     return _to_response(_get_comment(db, task, comment.id), ctx.user.id)
 

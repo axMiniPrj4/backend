@@ -6,10 +6,12 @@ from app.schemas.common import ORMModel
 
 
 class DocUpdateRequest(BaseModel):
-    """게시글 수정은 title/content만 (JSON). 파일 변경은 새 버전 업로드로."""
+    """자료 수정 — title/content/project_id(JSON). 파일 변경은 새 버전 업로드로."""
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     content: str | None = None
+    # 명시적으로 null 보내면 공통 자료로 이동. 미전송 시 소속 유지.
+    project_id: int | None = None
 
 
 class DocVersionResponse(ORMModel):
