@@ -18,11 +18,11 @@ Python 3.12 · FastAPI · SQLAlchemy 2.0 / Alembic · MySQL 8 · Redis(Refresh T
 
 | Hub 모듈 | WS 경로 (요지) | 역할 |
 |----------|----------------|------|
-| `workspace_hub` | `/api/projects/{id}/workspace/.../ws` | 코드 편집 중 라이브 sync |
-| `whiteboard_hub` | `.../whiteboard/ws` | 보드 state / PUT 직후 broadcast |
-| `chat_hub` | `.../chat/ws` | 메시지 POST 시 즉시 push |
+| `workspace_hub` | `/api/projects/{id}/workspace/.../ws` | 코드 편집 중 라이브 sync + presence |
+| `whiteboard_hub` | `.../whiteboard/ws` | 보드 state / PUT 직후 broadcast + optimistic lock(2026-07-15) |
+| `chat_hub` | `.../chat/ws` | 메시지 POST 시 즉시 push + presence·typing(2026-07-15) |
 | `erd_hub` | `.../erd/ws` | `erd-state` + PUT + optimistic lock |
-| `video_hub` | `.../video/ws` | WebRTC 시그널링 · `GET .../video/live-peers` |
+| `video_hub` | `.../video/ws` | WebRTC 시그널링 · `GET .../video/live-peers` · presence에 `sharingScreen`(2026-07-15) |
 
 FE는 Vite `/api` 프록시 `ws: true`로 접속합니다 (로컬에서 uvicorn 포트와 FE `vite.config` 일치 필요, 예: **8001**).
 
@@ -59,6 +59,14 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 - **부팅 시 1회 판단**만 함 — 운영 중 1차 DB가 죽어도 재시작 전엔 자동으로 안 넘어가고, RDS로 넘어간 뒤 1차 DB가 복구돼도 자동으로 되돌아오지 않음
 - 1차 DB ↔ RDS 간 **실시간 복제/동기화 없음** — RDS는 특정 시점 스냅샷일 뿐이라, failover 시 그 이후 데이터는 유실됨
 - RDS는 반드시 `alembic upgrade head`로 스키마를 최신까지 맞춰둬야 함 (2026-07-15 기준 1회 실행 완료 — 이후 새 마이그레이션 추가 시 RDS에도 별도로 적용 필요)
+
+## 2026-07-15 추가 업데이트 — 공동작업 권한 레벨(뷰어/에디터)
+
+`project_member.collab_permission`(`EDITOR` | `VIEWER`, 마이그레이션 `f7a8b9c0d1e2`) 추가. 팀 역할(LEADER/MEMBER)과는 별개 축으로, 팀장은 항상 편집 가능합니다.
+
+- `app/core/deps.py`: `ProjectContext.is_editor` + `require_editor` 의존성 신규 (`require_leader`와 동일한 패턴)
+- 적용 대상: 채팅 메시지 작성, 화이트보드 PUT/reset, ERD PUT, 워크스페이스 파일 생성/수정/삭제/복원 — REST뿐 아니라 WS 실시간 메시지(`board-state`/`erd-state`/`content-change`)도 뷰어면 서버에서 조용히 drop
+- `PATCH /api/projects/{id}/members/{user_id}/permission` (팀장 전용) — 멤버 권한 변경
 
 ## 실행 방법
 

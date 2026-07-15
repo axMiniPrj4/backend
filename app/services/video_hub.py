@@ -17,6 +17,7 @@ class VideoPeerConn:
     nickname: str
     muted: bool = False
     camera_off: bool = False
+    sharing_screen: bool = False
 
 
 @dataclass
@@ -46,6 +47,7 @@ class VideoHub:
                 "nickname": p.nickname,
                 "muted": p.muted,
                 "cameraOff": p.camera_off,
+                "sharingScreen": p.sharing_screen,
                 "userId": p.user_id,
             }
             for p in room.peers.values()
@@ -85,6 +87,7 @@ class VideoHub:
         nickname: str | None = None,
         muted: bool | None = None,
         camera_off: bool | None = None,
+        sharing_screen: bool | None = None,
     ) -> list[dict[str, Any]]:
         room = await self._room(project_id)
         async with room.lock:
@@ -97,6 +100,8 @@ class VideoHub:
                 peer.muted = muted
             if camera_off is not None:
                 peer.camera_off = camera_off
+            if sharing_screen is not None:
+                peer.sharing_screen = sharing_screen
             return self.peer_snapshot(room)
 
     async def send_to(

@@ -1,23 +1,34 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.deps import ProjectContext, get_project_context
-from app.core.errors import AppError
+from app.core.deps import ProjectContext, get_project_context, require_editor
+from app.core.errors import AppError, ErrorCode, conflict
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.base import utcnow
 from app.db.session import SessionLocal, get_db
 from app.models import Project, ProjectMember, User, WhiteboardBoard
+from app.models.project import CollabPermission, MemberRole
 from app.schemas.collaboration import WhiteboardOut, WhiteboardUpdate
 from app.services.whiteboard_hub import WhiteboardPeer, whiteboard_hub
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects/{project_id}/whiteboard", tags=["Whiteboard"])
+
+
+def _normalize_dt(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _same_revision(server: datetime, client: datetime) -> bool:
+    return _normalize_dt(server) == _normalize_dt(client)
 
 
 def _get_or_create_board(db: Session, project_id: int) -> WhiteboardBoard:
@@ -73,10 +84,17 @@ def get_whiteboard(ctx: ProjectContext = Depends(get_project_context), db: Sessi
 @router.put("", response_model=WhiteboardOut)
 async def update_whiteboard(
     body: WhiteboardUpdate,
-    ctx: ProjectContext = Depends(get_project_context),
+    ctx: ProjectContext = Depends(require_editor),
     db: Session = Depends(get_db),
 ):
     board = _get_or_create_board(db, ctx.project.id)
+
+    if body.base_updated_at is not None and not _same_revision(board.updated_at, body.base_updated_at):
+        raise conflict(
+            ErrorCode.WHITEBOARD_CONFLICT,
+            "다른 사용자가 먼저 수정했습니다. 최신 화이트보드를 불러온 뒤 다시 시도하세요.",
+        )
+
     board.objects = body.objects
     board.size_key = body.size_key
     board.custom_width = body.custom_width
@@ -91,7 +109,7 @@ async def update_whiteboard(
 
 @router.post("/reset", response_model=WhiteboardOut)
 async def reset_whiteboard(
-    ctx: ProjectContext = Depends(get_project_context),
+    ctx: ProjectContext = Depends(require_editor),
     db: Session = Depends(get_db),
     client_id: str | None = Query(default=None),
 ):
@@ -172,6 +190,8 @@ async def whiteboard_ws(
                 continue
 
             if msg_type == "board-state":
+                if member.role != MemberRole.LEADER and member.collab_permission == CollabPermission.VIEWER:
+                    continue
                 # 로컬 persist 직후 즉시 중계 (PUT 완료 전에도 상대가 볼 수 있음)
                 objects = message.get("objects")
                 if not isinstance(objects, list):

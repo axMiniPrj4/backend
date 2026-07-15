@@ -5,11 +5,12 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.deps import ProjectContext, get_current_user, get_project_context
+from app.core.deps import ProjectContext, get_current_user, get_project_context, require_editor
 from app.core.errors import AppError, conflict, forbidden, not_found
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.session import SessionLocal, get_db
 from app.models import Project, ProjectMember, User, WorkspaceFile, WorkspaceFileVersion
+from app.models.project import CollabPermission, MemberRole
 from app.schemas.collaboration import (
     WorkspaceFileCreate,
     WorkspaceFileOut,
@@ -25,7 +26,7 @@ project_router = APIRouter(prefix="/api/projects/{project_id}/workspace", tags=[
 file_router = APIRouter(prefix="/api/workspace/files", tags=["Workspace"])
 
 
-def _require_file_member(db: Session, project_id: int, user_id: int) -> None:
+def _require_file_member(db: Session, project_id: int, user_id: int, *, editor: bool = False) -> None:
     member = db.scalar(
         select(ProjectMember).where(
             ProjectMember.project_id == project_id, ProjectMember.user_id == user_id
@@ -33,6 +34,8 @@ def _require_file_member(db: Session, project_id: int, user_id: int) -> None:
     )
     if member is None:
         raise forbidden("프로젝트 멤버가 아닙니다.")
+    if editor and member.role != MemberRole.LEADER and member.collab_permission == CollabPermission.VIEWER:
+        raise forbidden("보기 권한만 있어 편집할 수 없습니다.")
 
 
 def _get_file_or_404(db: Session, file_id: int) -> WorkspaceFile:
@@ -68,7 +71,7 @@ def list_workspace_files(
 @project_router.post("/files", response_model=WorkspaceFileOut, status_code=201)
 def create_workspace_file(
     body: WorkspaceFileCreate,
-    ctx: ProjectContext = Depends(get_project_context),
+    ctx: ProjectContext = Depends(require_editor),
     db: Session = Depends(get_db),
 ):
     existing = db.scalar(
@@ -103,7 +106,7 @@ def update_workspace_file(
     db: Session = Depends(get_db),
 ):
     file = _get_file_or_404(db, file_id)
-    _require_file_member(db, file.project_id, user.id)
+    _require_file_member(db, file.project_id, user.id, editor=True)
     file.content = body.content
     file.version += 1
     file.updated_by = user.id
@@ -120,7 +123,7 @@ def delete_workspace_file(
     db: Session = Depends(get_db),
 ):
     file = _get_file_or_404(db, file_id)
-    _require_file_member(db, file.project_id, user.id)
+    _require_file_member(db, file.project_id, user.id, editor=True)
     db.delete(file)
     db.commit()
 
@@ -148,7 +151,7 @@ def restore_workspace_file_version(
     db: Session = Depends(get_db),
 ):
     file = _get_file_or_404(db, file_id)
-    _require_file_member(db, file.project_id, user.id)
+    _require_file_member(db, file.project_id, user.id, editor=True)
 
     version = db.get(WorkspaceFileVersion, body.version_id)
     if version is None or version.file_id != file_id:
@@ -250,6 +253,8 @@ async def workspace_ws(
                 continue
 
             if msg_type == "content-change":
+                if member.role != MemberRole.LEADER and member.collab_permission == CollabPermission.VIEWER:
+                    continue
                 file_id = message.get("fileId")
                 content = message.get("content")
                 if file_id is None or not isinstance(content, str):

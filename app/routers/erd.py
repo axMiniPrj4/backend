@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.deps import ProjectContext, get_project_context
+from app.core.deps import ProjectContext, get_project_context, require_editor
 from app.core.errors import AppError, ErrorCode, conflict
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.base import utcnow
 from app.db.session import SessionLocal, get_db
 from app.models import ErdDocument, Project, ProjectMember, User
+from app.models.project import CollabPermission, MemberRole
 from app.schemas.collaboration import ErdOut, ErdUpdate
 from app.services.erd_hub import ErdPeer, erd_hub
 
@@ -79,7 +80,7 @@ def get_erd(ctx: ProjectContext = Depends(get_project_context), db: Session = De
 @router.put("", response_model=ErdOut)
 async def update_erd(
     body: ErdUpdate,
-    ctx: ProjectContext = Depends(get_project_context),
+    ctx: ProjectContext = Depends(require_editor),
     db: Session = Depends(get_db),
 ):
     document = _get_or_create_document(db, ctx.project.id)
@@ -177,6 +178,8 @@ async def erd_ws(
                 continue
 
             if msg_type == "erd-state":
+                if member.role != MemberRole.LEADER and member.collab_permission == CollabPermission.VIEWER:
+                    continue
                 # PUT 전 즉시 중계 (메타만 / 본문 포함)
                 doc = message.get("document") or {}
                 await erd_hub.broadcast(

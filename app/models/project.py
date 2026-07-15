@@ -32,6 +32,15 @@ class MemberRole:
     MEMBER = "MEMBER"
 
 
+class CollabPermission:
+    """팀 역할(LEADER/MEMBER)과는 별개인 공동작업 쓰기 권한. LEADER는 항상 편집 가능."""
+
+    EDITOR = "EDITOR"
+    VIEWER = "VIEWER"
+
+    ALL = {EDITOR, VIEWER}
+
+
 class Project(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "project"
 
@@ -60,6 +69,9 @@ class ProjectMember(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(10), nullable=False, default=MemberRole.MEMBER)
+    collab_permission: Mapped[str] = mapped_column(
+        String(10), nullable=False, default=CollabPermission.EDITOR
+    )
     joined_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="members")

@@ -10,7 +10,7 @@ from app.core.errors import ErrorCode, forbidden, not_found, unauthorized
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.session import get_db
 from app.models import Project, ProjectMember, User
-from app.models.project import MemberRole
+from app.models.project import CollabPermission, MemberRole
 from app.models.user import UserRole
 
 _bearer = HTTPBearer(auto_error=False)
@@ -47,6 +47,11 @@ class ProjectContext:
     def is_leader(self) -> bool:
         return self.member.role == MemberRole.LEADER
 
+    @property
+    def is_editor(self) -> bool:
+        # 팀장은 뷰어로 지정되어 있어도 항상 편집 가능
+        return self.is_leader or self.member.collab_permission != CollabPermission.VIEWER
+
 
 def get_project_context(
     project_id: int = Path(...),
@@ -70,4 +75,10 @@ def get_project_context(
 def require_leader(ctx: ProjectContext = Depends(get_project_context)) -> ProjectContext:
     if not ctx.is_leader:
         raise forbidden("팀장(LEADER) 권한이 필요합니다.")
+    return ctx
+
+
+def require_editor(ctx: ProjectContext = Depends(get_project_context)) -> ProjectContext:
+    if not ctx.is_editor:
+        raise forbidden("보기 권한만 있어 편집할 수 없습니다.")
     return ctx

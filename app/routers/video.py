@@ -325,6 +325,7 @@ async def video_signaling_ws(
                     nickname=message.get("nickname"),
                     muted=message.get("muted"),
                     camera_off=message.get("cameraOff"),
+                    sharing_screen=message.get("sharingScreen"),
                 )
                 me = next((p for p in peers if p["peerId"] == peer_id), None)
                 if me:

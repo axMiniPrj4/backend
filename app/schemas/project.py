@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.project import ProjectPriority, ProjectStatus
+from app.models.project import CollabPermission, ProjectPriority, ProjectStatus
 from app.schemas.common import ORMModel
 
 
@@ -57,6 +57,17 @@ class LeaderDelegateRequest(BaseModel):
     user_id: int
 
 
+class MemberPermissionUpdateRequest(BaseModel):
+    collab_permission: str
+
+    @field_validator("collab_permission")
+    @classmethod
+    def _perm(cls, v):
+        if v not in CollabPermission.ALL:
+            raise ValueError(f"collab_permission은 {sorted(CollabPermission.ALL)} 중 하나여야 합니다.")
+        return v
+
+
 class ProjectResponse(ORMModel):
     id: int
     name: str
@@ -91,4 +102,5 @@ class MemberResponse(BaseModel):
     name: str
     nickname: str
     role: str
+    collab_permission: str
     joined_at: datetime

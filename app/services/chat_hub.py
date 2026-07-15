@@ -1,4 +1,4 @@
-"""프로젝트별 채팅 WebSocket 룸 (인메모리)."""
+"""프로젝트별 채팅 WebSocket 룸 (인메모리) — presence + typing 포함."""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +14,8 @@ class ChatPeer:
     websocket: WebSocket
     client_id: str
     user_id: int
+    nickname: str = ""
+    typing: bool = False
 
 
 @dataclass
@@ -36,7 +38,14 @@ class ChatHub:
                 self._rooms[project_id] = room
             return room
 
-    async def join(self, project_id: int, peer: ChatPeer) -> None:
+    @staticmethod
+    def _presence_snapshot(room: ChatRoom) -> list[dict[str, Any]]:
+        return [
+            {"clientId": p.client_id, "userId": p.user_id, "nickname": p.nickname, "typing": p.typing}
+            for p in room.peers.values()
+        ]
+
+    async def join(self, project_id: int, peer: ChatPeer) -> list[dict[str, Any]]:
         room = await self._room(project_id)
         async with room.lock:
             old = room.peers.get(peer.client_id)
@@ -46,17 +55,28 @@ class ChatHub:
                 except Exception:
                     pass
             room.peers[peer.client_id] = peer
+            return self._presence_snapshot(room)
 
-    async def leave(self, project_id: int, client_id: str) -> None:
+    async def leave(self, project_id: int, client_id: str) -> list[dict[str, Any]]:
         room = await self._room(project_id)
         async with room.lock:
             room.peers.pop(client_id, None)
+            presence = self._presence_snapshot(room)
             empty = not room.peers
         if empty:
             async with self._global_lock:
                 current = self._rooms.get(project_id)
                 if current is not None and not current.peers:
                     self._rooms.pop(project_id, None)
+        return presence
+
+    async def set_typing(self, project_id: int, client_id: str, typing: bool) -> list[dict[str, Any]]:
+        room = await self._room(project_id)
+        async with room.lock:
+            peer = room.peers.get(client_id)
+            if peer is not None:
+                peer.typing = typing
+            return self._presence_snapshot(room)
 
     async def broadcast(
         self,

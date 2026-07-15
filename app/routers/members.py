@@ -7,7 +7,7 @@ from app.core.errors import ErrorCode, bad_request, conflict, not_found
 from app.db.session import get_db
 from app.models import ProjectMember
 from app.models.project import MemberRole
-from app.schemas.project import LeaderDelegateRequest, MemberResponse
+from app.schemas.project import LeaderDelegateRequest, MemberPermissionUpdateRequest, MemberResponse
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["Member"])
 
@@ -22,7 +22,12 @@ def list_members(ctx: ProjectContext = Depends(get_project_context), db: Session
     ).all()
     return [
         MemberResponse(
-            user_id=m.user_id, name=m.user.name, nickname=m.user.nickname, role=m.role, joined_at=m.joined_at
+            user_id=m.user_id,
+            name=m.user.name,
+            nickname=m.user.nickname,
+            role=m.role,
+            collab_permission=m.collab_permission,
+            joined_at=m.joined_at,
         )
         for m in members
     ]
@@ -49,6 +54,27 @@ def kick_member(user_id: int, ctx: ProjectContext = Depends(require_leader), db:
         raise not_found("해당 멤버를 찾을 수 없습니다.")
     db.delete(target)  # Hard Delete
     db.commit()
+
+
+@router.patch("/members/{user_id}/permission", response_model=list[MemberResponse])
+def update_member_permission(
+    user_id: int,
+    body: MemberPermissionUpdateRequest,
+    ctx: ProjectContext = Depends(require_leader),
+    db: Session = Depends(get_db),
+):
+    if user_id == ctx.user.id:
+        raise bad_request(message="본인 권한은 변경할 수 없습니다.")
+    target = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == ctx.project.id, ProjectMember.user_id == user_id
+        )
+    )
+    if target is None:
+        raise not_found("해당 멤버를 찾을 수 없습니다.")
+    target.collab_permission = body.collab_permission
+    db.commit()
+    return list_members(ctx, db)
 
 
 @router.put("/leader", response_model=list[MemberResponse])

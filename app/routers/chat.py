@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.deps import ProjectContext, get_project_context
+from app.core.deps import ProjectContext, get_project_context, require_editor
 from app.core.errors import AppError
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.db.session import SessionLocal, get_db
@@ -66,7 +66,7 @@ def list_chat_messages(
 @router.post("/messages", response_model=ChatMessageOut, status_code=201)
 async def create_chat_message(
     body: ChatMessageCreate,
-    ctx: ProjectContext = Depends(get_project_context),
+    ctx: ProjectContext = Depends(require_editor),
     db: Session = Depends(get_db),
 ):
     message = ChatMessage(
@@ -120,13 +120,20 @@ async def chat_ws(
             return
 
         await websocket.accept()
-        await chat_hub.join(
+        presence = await chat_hub.join(
             project_id,
-            ChatPeer(websocket=websocket, client_id=client_id, user_id=user.id),
+            ChatPeer(websocket=websocket, client_id=client_id, user_id=user.id, nickname=user.nickname),
         )
         joined = True
         await websocket.send_text(
-            json.dumps({"type": "ready", "projectId": project_id, "clientId": client_id})
+            json.dumps(
+                {"type": "ready", "projectId": project_id, "clientId": client_id, "presence": presence}
+            )
+        )
+        await chat_hub.broadcast(
+            project_id,
+            {"type": "presence", "projectId": project_id, "presence": presence},
+            exclude_client_id=client_id,
         )
 
         while True:
@@ -135,8 +142,20 @@ async def chat_ws(
                 message = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            if message.get("type") == "ping":
+
+            msg_type = message.get("type")
+            if msg_type == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            if msg_type == "typing":
+                presence = await chat_hub.set_typing(project_id, client_id, bool(message.get("typing")))
+                await chat_hub.broadcast(
+                    project_id,
+                    {"type": "presence", "projectId": project_id, "presence": presence},
+                    exclude_client_id=client_id,
+                )
+                continue
 
     except WebSocketDisconnect:
         pass
@@ -145,4 +164,8 @@ async def chat_ws(
     finally:
         db.close()
         if joined:
-            await chat_hub.leave(project_id, client_id)
+            presence = await chat_hub.leave(project_id, client_id)
+            await chat_hub.broadcast(
+                project_id,
+                {"type": "presence", "projectId": project_id, "presence": presence},
+            )

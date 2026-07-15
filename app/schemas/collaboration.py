@@ -31,6 +31,7 @@ class WhiteboardUpdate(BaseModel):
     custom_height: int = 720
     zoom: float = 1.0
     client_id: str | None = None
+    base_updated_at: datetime | None = None
 
 
 class WhiteboardOut(ORMModel):
