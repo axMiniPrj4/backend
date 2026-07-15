@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # DB (MySQL 8 기준. 로컬 개발/테스트는 sqlite URL 사용 가능)
     database_url: str = "mysql+pymysql://ohap:ohap@localhost:3306/ohapjijol?charset=utf8mb4"
 
+    # 1차 DB(라즈베리파이) 연결 실패 시 우회할 2차 DB(RDS). 미설정("") 시 우회 없이 그대로 실패
+    rds_database_url: str = ""
+
     # Redis: 미설정("") 시 인메모리 토큰 저장소로 폴백 (개발 전용)
     redis_url: str = ""
 
