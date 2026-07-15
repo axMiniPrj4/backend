@@ -124,6 +124,7 @@ class FindLoginIdRequest(BaseModel):
 
 class FindLoginIdResponse(BaseModel):
     login_id: str
+    email_sent: bool = False
 
 
 class ResetPasswordRequest(BaseModel):
@@ -132,3 +133,20 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
     _pw = field_validator("new_password")(validate_password)
+
+
+class ResetPasswordMailRequest(BaseModel):
+    login_id: str
+    email: EmailStr
+
+
+class ResetPasswordConfirmRequest(BaseModel):
+    token: str
+    new_password: str
+
+    _pw = field_validator("new_password")(validate_password)
+
+
+class ResetPasswordMailResponse(BaseModel):
+    email_sent: bool
+    expires_minutes: int

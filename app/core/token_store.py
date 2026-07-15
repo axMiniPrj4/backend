@@ -61,3 +61,23 @@ def get_refresh_token(user_id: int) -> str | None:
 
 def delete_refresh_token(user_id: int) -> None:
     _store.delete(_RT_KEY.format(user_id=user_id))
+
+
+_RESET_KEY = "pwdreset:{token}"
+
+
+def save_password_reset_token(token: str, user_id: int) -> None:
+    ttl = max(60, int(settings.password_reset_token_minutes) * 60)
+    _store.set(_RESET_KEY.format(token=token), str(user_id), ttl)
+
+
+def pop_password_reset_token(token: str) -> int | None:
+    key = _RESET_KEY.format(token=token)
+    raw = _store.get(key)
+    if raw is None:
+        return None
+    _store.delete(key)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None

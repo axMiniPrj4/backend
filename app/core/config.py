@@ -36,9 +36,23 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # SMTP (아이디 찾기·비밀번호 재설정 메일). SMTP_HOST 비우면 메일 비활성
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+    frontend_base_url: str = "http://localhost:5173"
+    password_reset_token_minutes: int = 60
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def mail_enabled(self) -> bool:
+        return bool(self.smtp_host.strip())
 
 
 @lru_cache

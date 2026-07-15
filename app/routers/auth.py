@@ -1,10 +1,13 @@
+from secrets import token_urlsafe
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import token_store
+from app.core.config import settings
 from app.core.deps import get_current_user
-from app.core.errors import ErrorCode, conflict, not_found, unauthorized
+from app.core.errors import ErrorCode, bad_request, conflict, not_found, unauthorized
 from app.core.security import (
     TOKEN_TYPE_REFRESH,
     create_access_token,
@@ -22,11 +25,15 @@ from app.schemas.user import (
     FindLoginIdResponse,
     LoginRequest,
     RefreshRequest,
+    ResetPasswordConfirmRequest,
+    ResetPasswordMailRequest,
+    ResetPasswordMailResponse,
     ResetPasswordRequest,
     SignupRequest,
     TokenResponse,
     UserResponse,
 )
+from app.services import mail as mail_service
 from app.services.user_service import apply_lazy_plan_expiry
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
@@ -127,14 +134,19 @@ def check_nickname(nickname: str = Query(min_length=1), db: Session = Depends(ge
 
 @router.post("/find-login-id", response_model=FindLoginIdResponse)
 def find_login_id(body: FindLoginIdRequest, db: Session = Depends(get_db)):
+    """이메일이 일치하면 아이디를 화면에 반환. (메일 발송은 SMTP 설정 시에만 시도)"""
     user = db.scalar(select(User).where(User.email == body.email))
     if user is None:
         raise not_found("해당 이메일로 가입된 계정을 찾을 수 없습니다.")
-    return FindLoginIdResponse(login_id=user.login_id)
+    email_sent = False
+    if settings.mail_enabled:
+        email_sent = mail_service.send_find_login_id_email(to=user.email, login_id=user.login_id)
+    return FindLoginIdResponse(login_id=user.login_id, email_sent=email_sent)
 
 
 @router.post("/reset-password", status_code=204)
 def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """아이디+이메일이 일치하면 새 비밀번호로 즉시 변경. (메일 연동 없이 사용 가능)"""
     user = db.scalar(
         select(User).where(User.login_id == body.login_id, User.email == body.email)
     )
@@ -143,3 +155,52 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
     user.password_hash = hash_password(body.new_password)
     db.commit()
     token_store.delete_refresh_token(user.id)
+    if settings.mail_enabled:
+        mail_service.send_password_changed_email(to=user.email)
+
+
+@router.post("/reset-password/request", response_model=ResetPasswordMailResponse)
+def request_password_reset(body: ResetPasswordMailRequest, db: Session = Depends(get_db)):
+    """이메일로 재설정 링크 발송. SMTP 미설정 시 MAIL_NOT_CONFIGURED → FE가 즉시 재설정 폼으로 폴백."""
+    if not settings.mail_enabled:
+        raise bad_request(
+            ErrorCode.MAIL_NOT_CONFIGURED,
+            "메일 서버가 설정되지 않았습니다. 화면에서 바로 새 비밀번호를 설정해 주세요.",
+        )
+
+    user = db.scalar(
+        select(User).where(User.login_id == body.login_id, User.email == body.email)
+    )
+    if user is None:
+        raise not_found("아이디와 이메일이 일치하는 계정을 찾을 수 없습니다.")
+
+    token = token_urlsafe(32)
+    token_store.save_password_reset_token(token, user.id)
+    minutes = settings.password_reset_token_minutes
+    base = settings.frontend_base_url.rstrip("/")
+    reset_url = f"{base}/reset-password/confirm?token={token}"
+    sent = mail_service.send_password_reset_email(
+        to=user.email, reset_url=reset_url, minutes=minutes
+    )
+    if not sent:
+        raise bad_request(
+            ErrorCode.MAIL_NOT_CONFIGURED,
+            "메일 발송에 실패했습니다. 잠시 후 다시 시도하거나 화면에서 바로 재설정해 주세요.",
+        )
+    return ResetPasswordMailResponse(email_sent=True, expires_minutes=minutes)
+
+
+@router.post("/reset-password/confirm", status_code=204)
+def confirm_password_reset(body: ResetPasswordConfirmRequest, db: Session = Depends(get_db)):
+    """(선택) 메일 링크 방식 — SMTP 연동 후 사용."""
+    user_id = token_store.pop_password_reset_token(body.token.strip())
+    if user_id is None:
+        raise bad_request(ErrorCode.INVALID_TOKEN, "재설정 링크가 만료되었거나 올바르지 않습니다.")
+    user = db.get(User, user_id)
+    if user is None:
+        raise not_found("사용자를 찾을 수 없습니다.")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    token_store.delete_refresh_token(user.id)
+    if settings.mail_enabled:
+        mail_service.send_password_changed_email(to=user.email)
