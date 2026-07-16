@@ -13,3 +13,4 @@ redis==8.0.1
 sqlalchemy==2.0.51
 uvicorn==0.51.0
 email-validator==2.3.0
+boto3==1.40.0

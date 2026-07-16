@@ -18,6 +18,7 @@ from app.routers import (
     chat,
     docs,
     erd,
+    infra,
     inquiries,
     members,
     notices,
@@ -202,3 +203,4 @@ app.include_router(video.router)
 app.include_router(ai.router)
 app.include_router(calendar.router)
 app.include_router(admin.router)
+app.include_router(infra.router)

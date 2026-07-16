@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     frontend_base_url: str = "http://localhost:5173"
     password_reset_token_minutes: int = 60
 
+    # 인프라 검증 대시보드 (모니터링 전용). 비우면 미설정 상태로 응답.
+    aws_region: str = ""
+    infra_asg_name: str = ""
+    infra_alb_name: str = ""
+    infra_target_group_arn: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
