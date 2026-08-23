@@ -1,6 +1,9 @@
+from collections import Counter
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core import token_store
 from app.core.deps import get_current_user
@@ -8,12 +11,13 @@ from app.core.errors import ErrorCode, bad_request, conflict
 from app.core.pagination import DEFAULT_SIZE, MAX_SIZE, paginate, parse_page_params
 from app.core.security import hash_password, verify_password
 from app.db.session import get_db
-from app.models import LoginHistory, Payment, Project, Task, User
+from app.models import LoginHistory, OprReport, Payment, Project, Task, User
+from app.models.opr import OprSection
 from app.models.payment import PaymentMethod
 from app.models.task import TaskStatus, task_assignee
 from app.models.user import UserPlan
 from app.schemas.common import PageResponse
-from app.schemas.my_work import MyTaskItem
+from app.schemas.my_work import MyOprDaySummary, MyTaskItem
 from app.schemas.payment import PaymentResponse
 from app.schemas.user import (
     LoginHistoryResponse,
@@ -155,6 +159,42 @@ def list_my_tasks(
         )
         for task, project_name in rows
     ]
+
+
+@router.get("/me/opr/week", response_model=list[MyOprDaySummary])
+def list_my_opr_week(
+    start: date = Query(...),
+    end: date = Query(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """전체 프로젝트에서 내가 작성한 OPR을 날짜 범위로 모아 하루 단위 요약을 반환한다 (통합 주간 뷰)."""
+    if end < start or (end - start).days > 31:
+        raise bad_request(message="end는 start 이후여야 하며 조회 범위는 최대 31일입니다.")
+
+    stmt = (
+        select(OprReport, Project.name)
+        .join(Project, Project.id == OprReport.project_id)
+        .where(OprReport.author_id == user.id, OprReport.report_date >= start, OprReport.report_date <= end)
+        .options(selectinload(OprReport.rows))
+        .order_by(OprReport.report_date.asc(), Project.name.asc())
+    )
+    rows = db.execute(stmt).all()
+    result = []
+    for report, project_name in rows:
+        counts = Counter(row.section_type for row in report.rows if row.content.strip())
+        result.append(
+            MyOprDaySummary(
+                project_id=report.project_id,
+                project_title=project_name,
+                report_date=report.report_date,
+                status=report.status,
+                today_count=counts.get(OprSection.TODAY, 0),
+                completed_count=counts.get(OprSection.COMPLETED, 0),
+                issue_count=counts.get(OprSection.ISSUE, 0),
+            )
+        )
+    return result
 
 
 @router.delete("/me", status_code=204)

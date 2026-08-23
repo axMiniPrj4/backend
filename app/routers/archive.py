@@ -3,7 +3,9 @@
 권한 (기준안, 2026-07-14):
 - 공통 자료: 등록·조회는 로그인 사용자 누구나 / 수정·삭제·새 버전 업로드·버전 삭제는 작성자 본인만
 - 프로젝트 자료: 기존 규칙 그대로 (멤버 조회·버전 업로드, 수정·삭제는 작성자 또는 LEADER)
+- SYSTEM_ADMIN: 소속 여부와 무관하게 모든 프로젝트 자료를 조회 가능 (2026-08-24)
 """
+
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -16,6 +18,7 @@ from app.db.base import utcnow
 from app.db.session import get_db
 from app.models import Doc, DocVersion, ProjectMember, User
 from app.models.project import MemberRole
+from app.models.user import UserRole
 from app.schemas.common import PageResponse
 from app.schemas.doc import ArchiveDocResponse, DocUpdateRequest, DocVersionResponse
 
@@ -46,7 +49,7 @@ def _my_project_ids(user: User):
 
 
 def _get_accessible_doc(db: Session, user: User, doc_id: int) -> Doc:
-    """공통 자료는 누구나, 프로젝트 자료는 멤버만 접근 가능."""
+    """공통 자료는 누구나, 프로젝트 자료는 멤버 또는 SYSTEM_ADMIN만 접근 가능."""
     doc = db.scalar(
         select(Doc)
         .where(Doc.id == doc_id)
@@ -54,7 +57,7 @@ def _get_accessible_doc(db: Session, user: User, doc_id: int) -> Doc:
     )
     if doc is None or (doc.project_id is not None and (doc.project is None or doc.project.is_deleted)):
         raise not_found("자료를 찾을 수 없습니다.")
-    if doc.project_id is not None:
+    if doc.project_id is not None and user.role != UserRole.SYSTEM_ADMIN:
         member = db.scalar(
             select(ProjectMember.id).where(
                 ProjectMember.project_id == doc.project_id, ProjectMember.user_id == user.id
@@ -129,23 +132,25 @@ def list_archive(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """전역 자료 목록 — 공통 자료 + 내가 참여한 프로젝트의 자료."""
+    """전역 자료 목록 — 공통 자료 + 내가 참여한 프로젝트의 자료 (SYSTEM_ADMIN은 전체 프로젝트)."""
     params = parse_page_params(page, size, sort, _SORT_FIELDS)
-    stmt = (
-        select(Doc)
-        .where(or_(Doc.project_id.is_(None), Doc.project_id.in_(_my_project_ids(user))))
-        .options(selectinload(Doc.versions), selectinload(Doc.author), selectinload(Doc.project))
+    stmt = select(Doc).options(
+        selectinload(Doc.versions), selectinload(Doc.author), selectinload(Doc.project)
     )
+    is_admin = user.role == UserRole.SYSTEM_ADMIN
+    if not is_admin:
+        stmt = stmt.where(or_(Doc.project_id.is_(None), Doc.project_id.in_(_my_project_ids(user))))
     if common_only:
         stmt = stmt.where(Doc.project_id.is_(None))
     elif project_id is not None:
-        is_member = db.scalar(
-            select(ProjectMember.id).where(
-                ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+        if not is_admin:
+            is_member = db.scalar(
+                select(ProjectMember.id).where(
+                    ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+                )
             )
-        )
-        if not is_member:
-            raise forbidden("프로젝트 멤버가 아닙니다.")
+            if not is_member:
+                raise forbidden("프로젝트 멤버가 아닙니다.")
         stmt = stmt.where(Doc.project_id == project_id)
     if q:
         stmt = stmt.where(Doc.title.like(f"%{q}%"))

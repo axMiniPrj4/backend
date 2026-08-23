@@ -40,16 +40,21 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 @dataclass
 class ProjectContext:
     project: Project
-    member: ProjectMember
+    member: ProjectMember | None
     user: User
 
     @property
     def is_leader(self) -> bool:
+        # SYSTEM_ADMIN이 비멤버로 열람 중인 경우는 LEADER로 취급하지 않음 (조회 전용 우회)
+        if self.member is None:
+            return False
         return self.member.role == MemberRole.LEADER
 
     @property
     def is_editor(self) -> bool:
         # 팀장은 뷰어로 지정되어 있어도 항상 편집 가능
+        if self.member is None:
+            return False
         return self.is_leader or self.member.collab_permission != CollabPermission.VIEWER
 
 
@@ -58,7 +63,7 @@ def get_project_context(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectContext:
-    # ③ 프로젝트 존재(404) + 멤버십(403)
+    # ③ 프로젝트 존재(404) + 멤버십(403) — SYSTEM_ADMIN은 멤버십 없이도 조회 가능(전체 열람 권한)
     project = db.get(Project, project_id)
     if project is None or project.is_deleted:
         raise not_found("프로젝트를 찾을 수 없습니다.")
@@ -67,7 +72,7 @@ def get_project_context(
             ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
         )
     )
-    if member is None:
+    if member is None and user.role != UserRole.SYSTEM_ADMIN:
         raise forbidden("프로젝트 멤버가 아닙니다.")
     return ProjectContext(project=project, member=member, user=user)
 

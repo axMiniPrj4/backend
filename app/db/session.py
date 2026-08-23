@@ -1,4 +1,4 @@
-"""DB 세션 — 1차(Pi) 장애 시 2차(RDS)로 부팅·런타임 모두 전환."""
+"""DB 세션 — 기본 DB 장애 시 선택적 보조 DB로 부팅·런타임 전환."""
 from __future__ import annotations
 
 import threading
@@ -20,7 +20,7 @@ SessionLocal: sessionmaker
 def _connect_args_for(url: str) -> dict:
     if url.startswith("sqlite"):
         return {"check_same_thread": False}
-    # Pi Tailscale 단절 시 요청이 길게 매달리지 않도록 짧게
+    # DB 네트워크 장애 시 요청이 길게 매달리지 않도록 짧게 유지한다.
     return {"connect_timeout": 3}
 
 
@@ -56,33 +56,33 @@ def _is_connectivity_error(exc: BaseException) -> bool:
 
 
 def _build_engine() -> Engine:
-    """기동 시 1차 → 실패 시 RDS."""
+    """기동 시 기본 DB에 연결하고, 실패하면 설정된 보조 DB로 전환한다."""
     global _using_rds
     try:
         primary = _make_engine(settings.database_url)
         _probe(primary)
-        print("[DB] 1차 DB(라즈베리파이) 연결 성공")
+        print("[DB] 기본 DB 연결 성공")
         _using_rds = False
         return primary
     except OperationalError as e:
-        print(f"[DB] 1차 DB 연결 실패: {e}")
+        print(f"[DB] 기본 DB 연결 실패: {e}")
 
     if not settings.rds_database_url:
-        raise Exception("1차 DB 연결 실패했고, RDS 주소도 설정되어 있지 않습니다.")
+        raise Exception("기본 DB 연결에 실패했고, 보조 DB 주소도 설정되어 있지 않습니다.")
 
     backup = _make_engine(settings.rds_database_url)
     try:
         _probe(backup)
     except OperationalError as e:
-        print(f"[DB] 2차 DB(RDS) 연결도 실패: {e}")
+        print(f"[DB] 보조 DB 연결도 실패: {e}")
         raise
-    print("[DB] 2차 DB(RDS)로 전환 성공 (부팅)")
+    print("[DB] 보조 DB로 전환 성공 (부팅)")
     _using_rds = True
     return backup
 
 
 def failover_to_rds(reason: BaseException | None = None) -> bool:
-    """런타임에 1차 DB 장애 시 RDS로 엔진 교체. 이미 RDS거나 URL 없으면 False."""
+    """런타임에 기본 DB 장애 시 보조 DB로 교체한다. 이미 전환됐거나 URL이 없으면 False."""
     global engine, SessionLocal, _using_rds
     if not settings.rds_database_url:
         return False
@@ -91,12 +91,12 @@ def failover_to_rds(reason: BaseException | None = None) -> bool:
         if _using_rds:
             return False
 
-        print(f"[DB] 런타임 장애 감지 → RDS 전환 시도: {reason}")
+        print(f"[DB] 런타임 장애 감지 → 보조 DB 전환 시도: {reason}")
         try:
             backup = _make_engine(settings.rds_database_url)
             _probe(backup)
         except Exception as e:
-            print(f"[DB] 런타임 RDS 전환 실패: {e}")
+            print(f"[DB] 런타임 보조 DB 전환 실패: {e}")
             return False
 
         old = engine
@@ -107,7 +107,7 @@ def failover_to_rds(reason: BaseException | None = None) -> bool:
             old.dispose()
         except Exception:
             pass
-        print("[DB] 런타임 2차 DB(RDS)로 전환 성공")
+        print("[DB] 런타임 보조 DB로 전환 성공")
         return True
 
 
@@ -123,7 +123,7 @@ def get_db() -> Generator[Session, None, None]:
     db: Session = SessionLocal()
     try:
         try:
-            # pool_pre_ping + 즉시 checkout → 죽은 Pi 커넥션을 여기서 잡음
+            # pool_pre_ping + 즉시 checkout으로 끊어진 DB 연결을 여기서 감지한다.
             db.connection()
         except Exception as e:
             db.close()

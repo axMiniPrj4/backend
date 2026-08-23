@@ -235,6 +235,88 @@ def test_gantt(client):
     assert body["tasks"][0]["assignees"][0]["nickname"]
 
 
+def test_daily_opr_source_and_save(client):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    report_date = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
+    base = f"/api/projects/{S['pid']}/opr"
+
+    # 프로젝트 멤버만 날짜별 원천 데이터를 조회할 수 있다.
+    assert client.get(f"{base}/source/{report_date}", headers=_auth(S["other_at"])).status_code == 403
+    source = client.get(f"{base}/source/{report_date}", headers=_auth(S["member_at"]))
+    assert source.status_code == 200, source.text
+    assert source.json()["report_date"] == report_date
+    assert any(row["section_type"] == "COMPLETED" for row in source.json()["rows"])
+
+    payload = {
+        "status": "DRAFT",
+        "rows": [
+            {
+                "section_type": "TODAY",
+                "content": "OPR 화면 구현",
+                "status": "진행 중",
+                "assignee_name": "리더킹",
+                "planned_date": report_date,
+                "task_id": S["task_leader"],
+                "source": "MANUAL",
+                "sort_order": 0,
+            },
+            {
+                "section_type": "ISSUE",
+                "content": "검토 일정 확인",
+                "status": "대응 중",
+                "issue_request": "팀 검토 요청",
+                "source": "MANUAL",
+                "sort_order": 1,
+            },
+        ],
+    }
+    created = client.put(f"{base}/{report_date}", json=payload, headers=_auth(S["leader_at"]))
+    assert created.status_code == 200, created.text
+    report_id = created.json()["id"]
+    S["leader_opr_id"] = report_id
+    assert len(created.json()["rows"]) == 2
+
+    # 개인 탭에서는 같은 날짜라도 다른 사람의 OPR이 보이지 않는다.
+    assert client.get(f"{base}/{report_date}", headers=_auth(S["member_at"])).status_code == 404
+
+    member_payload = {
+        "status": "DRAFT",
+        "rows": [
+            {
+                "section_type": "COMPLETED",
+                "content": "공동 업무 완료",
+                "status": "완료",
+                "completed_date": report_date,
+                "task_id": S["task_member"],
+                "source": "AUTO",
+                "sort_order": 0,
+            }
+        ],
+    }
+    member_created = client.put(
+        f"{base}/{report_date}", json=member_payload, headers=_auth(S["member_at"])
+    )
+    assert member_created.status_code == 200, member_created.text
+    member_report_id = member_created.json()["id"]
+    S["member_opr_id"] = member_report_id
+    assert member_report_id != report_id
+
+    # 팀 탭에서는 같은 프로젝트·날짜의 개인 OPR을 작성자별로 함께 본다.
+    team = client.get(f"{base}/team/{report_date}", headers=_auth(S["member_at"]))
+    assert team.status_code == 200
+    assert {report["id"] for report in team.json()} == {report_id, member_report_id}
+    assert all(report["author_nickname"] for report in team.json())
+
+    # 같은 작성자·프로젝트·날짜는 새 문서가 아니라 본인의 기존 OPR을 갱신한다.
+    member_payload["status"] = "SHARED"
+    updated = client.put(f"{base}/{report_date}", json=member_payload, headers=_auth(S["member_at"]))
+    assert updated.status_code == 200
+    assert updated.json()["id"] == member_report_id
+    assert updated.json()["status"] == "SHARED" and len(updated.json()["rows"]) == 1
+
+
 # ---------- Task 댓글 + 좋아요 ----------
 
 def test_task_comments(client):
@@ -360,9 +442,56 @@ def test_docs_and_versions(client):
     r = client.get(url, headers=_auth(S["member_at"]))
     assert r.status_code == 200 and r.json()["total_elements"] == 1
 
-    # 게시글 삭제(작성자) → 조회 404
-    assert client.delete(f"{url}/{S['doc_id']}", headers=_auth(S["leader_at"])).status_code == 204
-    assert client.get(f"{url}/{S['doc_id']}", headers=_auth(S["member_at"])).status_code == 404
+    # 관계 API 테스트가 같은 자료를 사용한 뒤 정리한다.
+
+
+def test_task_opr_doc_relations(client):
+    pid = S["pid"]
+    task_id = S["task_leader"]
+    doc_id = S["doc_id"]
+    report_id = S["leader_opr_id"]
+
+    task_doc_url = f"/api/projects/{pid}/tasks/{task_id}/docs/{doc_id}"
+    opr_doc_url = f"/api/projects/{pid}/opr/reports/{report_id}/docs/{doc_id}"
+
+    # 비멤버는 관계 조회·연결 불가
+    assert client.get(f"/api/projects/{pid}/tasks/{task_id}/relations", headers=_auth(S["other_at"])).status_code == 403
+
+    # Task/OPR에 같은 자료를 연결하며, 중복 POST는 멱등이다.
+    assert client.post(task_doc_url, headers=_auth(S["leader_at"])).status_code == 200
+    assert client.post(task_doc_url, headers=_auth(S["leader_at"])).status_code == 200
+    assert client.post(opr_doc_url, headers=_auth(S["leader_at"])).status_code == 200
+
+    task_rel = client.get(
+        f"/api/projects/{pid}/tasks/{task_id}/relations", headers=_auth(S["member_at"])
+    )
+    assert task_rel.status_code == 200, task_rel.text
+    assert task_rel.json()["documents"][0]["id"] == doc_id
+    assert any(report["report_id"] == report_id for report in task_rel.json()["opr_reports"])
+
+    opr_rel = client.get(
+        f"/api/projects/{pid}/opr/reports/{report_id}/relations", headers=_auth(S["member_at"])
+    )
+    assert opr_rel.status_code == 200
+    assert {task["id"] for task in opr_rel.json()["tasks"]} == {task_id}
+    assert opr_rel.json()["documents"][0]["id"] == doc_id
+
+    doc_rel = client.get(
+        f"/api/projects/{pid}/docs/{doc_id}/relations", headers=_auth(S["member_at"])
+    )
+    assert doc_rel.status_code == 200
+    assert task_id in {task["id"] for task in doc_rel.json()["tasks"]}
+    assert report_id in {report["report_id"] for report in doc_rel.json()["opr_reports"]}
+
+    # 담당자가 아닌 멤버는 다른 사람의 Task 연결을 해제할 수 없다.
+    assert client.delete(task_doc_url, headers=_auth(S["member_at"])).status_code == 403
+    assert client.delete(opr_doc_url, headers=_auth(S["leader_at"])).status_code == 204
+    assert client.delete(task_doc_url, headers=_auth(S["leader_at"])).status_code == 204
+
+    # 관계 정리 후 기존 자료 삭제 정책도 유지된다.
+    docs_url = f"/api/projects/{pid}/docs"
+    assert client.delete(f"{docs_url}/{doc_id}", headers=_auth(S["leader_at"])).status_code == 204
+    assert client.get(f"{docs_url}/{doc_id}", headers=_auth(S["member_at"])).status_code == 404
 
 
 # ---------- 전역 자료실 (공통 자료 + 내 프로젝트 자료) ----------

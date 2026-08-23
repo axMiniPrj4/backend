@@ -35,6 +35,8 @@ def list_members(ctx: ProjectContext = Depends(get_project_context), db: Session
 
 @router.delete("/members/me", status_code=204)
 def leave_project(ctx: ProjectContext = Depends(get_project_context), db: Session = Depends(get_db)):
+    if ctx.member is None:
+        raise not_found("프로젝트 멤버가 아닙니다.")
     if ctx.is_leader:
         raise conflict(ErrorCode.LEADER_CANNOT_LEAVE, "팀장은 위임 후에만 탈퇴할 수 있습니다.")
     db.delete(ctx.member)  # Hard Delete — 재참여 시 신규 행

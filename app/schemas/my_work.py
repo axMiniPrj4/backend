@@ -16,6 +16,16 @@ class MyTaskItem(ORMModel):
     color: str | None = None
 
 
+class MyOprDaySummary(BaseModel):
+    project_id: int
+    project_title: str
+    report_date: date
+    status: str
+    today_count: int
+    completed_count: int
+    issue_count: int
+
+
 class SearchHit(BaseModel):
     type: str  # project | task | material
     id: int

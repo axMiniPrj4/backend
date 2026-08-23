@@ -8,6 +8,7 @@ from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.db.session import get_db
 from app.models import Project, ProjectMember, User
 from app.models.project import MemberRole
+from app.models.user import UserRole
 from app.schemas.common import PageResponse
 from app.schemas.project import (
     ProjectCodeResponse,
@@ -58,11 +59,15 @@ def list_my_projects(
     db: Session = Depends(get_db),
 ):
     params = parse_page_params(page, size, sort, _SORT_FIELDS)
-    stmt = (
-        select(Project)
-        .join(ProjectMember, ProjectMember.project_id == Project.id)
-        .where(ProjectMember.user_id == user.id)
-    )
+    if user.role == UserRole.SYSTEM_ADMIN:
+        # 관리자는 소속 여부와 무관하게 전체 프로젝트를 조회
+        stmt = select(Project)
+    else:
+        stmt = (
+            select(Project)
+            .join(ProjectMember, ProjectMember.project_id == Project.id)
+            .where(ProjectMember.user_id == user.id)
+        )
     return paginate(db, stmt, Project, params)
 
 

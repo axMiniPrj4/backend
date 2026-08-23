@@ -23,8 +23,10 @@ from app.routers import (
     members,
     notices,
     notifications,
+    opr,
     project_todos,
     projects,
+    relations,
     search,
     task_comments,
     tasks,
@@ -182,6 +184,7 @@ def health():
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(projects.router)
+app.include_router(relations.router)
 app.include_router(members.router)
 app.include_router(tasks.router)
 app.include_router(task_comments.router)
@@ -192,6 +195,7 @@ app.include_router(archive.router)
 app.include_router(inquiries.router)
 app.include_router(notices.router)
 app.include_router(notifications.router)
+app.include_router(opr.router)
 app.include_router(search.router)
 app.include_router(activities.router)
 app.include_router(chat.router)

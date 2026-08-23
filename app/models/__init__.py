@@ -10,6 +10,8 @@ from app.models.answer_template import AnswerTemplate
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.payment import Payment
 from app.models.notification import Notification
+from app.models.opr import OprReport, OprRow
+from app.models.relation import OprReportDocLink, TaskDocLink
 from app.models.collaboration import (
     AiMessage,
     AiThread,
@@ -26,7 +28,7 @@ __all__ = [
     "User", "LoginHistory", "Project", "ProjectMember", "Task", "TaskComment", "TaskHistory",
     "Todo", "ProjectTodo",
     "Doc", "DocVersion", "Inquiry", "Answer", "Notice", "AnswerTemplate", "AdminAuditLog", "Payment",
-    "Notification",
+    "Notification", "OprReport", "OprRow", "TaskDocLink", "OprReportDocLink",
     "ChatMessage", "WhiteboardBoard", "WorkspaceFile", "WorkspaceFileVersion",
     "ErdDocument", "VideoSession", "AiThread", "AiMessage", "CalendarEvent",
 ]

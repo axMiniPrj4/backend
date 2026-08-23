@@ -67,6 +67,7 @@ class TodoResponse(ORMModel):
 class ProjectTodoCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=200)
     priority: str = TodoPriority.MEDIUM
+    parent_id: int | None = None
 
     _p = field_validator("priority")(_validate_priority)
 
@@ -75,6 +76,8 @@ class ProjectTodoUpdateRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=200)
     priority: str | None = None
     status: str | None = None
+    parent_id: int | None = None
+    sort_order: int | None = None
 
     @field_validator("priority")
     @classmethod
@@ -95,5 +98,7 @@ class ProjectTodoResponse(ORMModel):
     content: str
     priority: str
     status: str
+    parent_id: int | None = None
+    sort_order: int
     created_at: datetime
     updated_at: datetime
