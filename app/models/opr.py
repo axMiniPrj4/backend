@@ -54,7 +54,14 @@ class OprReport(Base, TimestampMixin):
 
     @property
     def author_nickname(self) -> str:
-        return self.author.nickname
+        """OPR 작성자 표시명 — 실명 우선, 없으면 닉네임."""
+        if not self.author:
+            return ""
+        return (self.author.name or self.author.nickname or "").strip()
+
+    @property
+    def author_name(self) -> str:
+        return self.author_nickname
 
 
 class OprRow(Base, TimestampMixin):

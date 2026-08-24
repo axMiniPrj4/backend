@@ -67,6 +67,7 @@ def _opr_item(report: OprReport, matching_rows: list[OprRow] | None = None) -> d
         "report_date": report.report_date,
         "author_id": report.author_id,
         "author_nickname": report.author_nickname,
+        "author_name": report.author_name,
         "status": report.status,
         "matching_rows": [
             {"row_id": row.id, "section_type": row.section_type, "content": row.content}

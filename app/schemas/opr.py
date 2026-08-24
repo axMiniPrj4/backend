@@ -63,6 +63,7 @@ class OprReportResponse(ORMModel):
     status: str
     author_id: int
     author_nickname: str
+    author_name: str | None = None
     rows: list[OprRowResponse]
     created_at: datetime
     updated_at: datetime

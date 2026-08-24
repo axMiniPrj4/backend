@@ -30,6 +30,7 @@ class RelatedOprOut(BaseModel):
     report_date: date
     author_id: int
     author_nickname: str
+    author_name: str | None = None
     status: str
     matching_rows: list[MatchingOprRowOut] = Field(default_factory=list)
 
