@@ -34,6 +34,7 @@ from app.schemas.user import (
     UserResponse,
 )
 from app.services import mail as mail_service
+from app.services.avatar_service import pick_avatar_key
 from app.services.user_service import apply_lazy_plan_expiry
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
@@ -59,6 +60,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)):
         name=body.name,
         nickname=body.nickname,
         email=body.email,
+        avatar_key=pick_avatar_key(db),
         terms_agreed_at=now,
         privacy_agreed_at=now,
     )

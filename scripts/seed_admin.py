@@ -13,6 +13,7 @@ from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models import User
 from app.models.user import UserRole
+from app.services.avatar_service import pick_avatar_key
 
 
 def main() -> None:
@@ -45,6 +46,7 @@ def main() -> None:
             name="시스템관리자",
             nickname=f"admin_{login_id}",
             email=email,
+            avatar_key=pick_avatar_key(db),
             role=UserRole.SYSTEM_ADMIN,
         )
         db.add(admin)

@@ -28,6 +28,7 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     nickname: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    avatar_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default=UserRole.USER)
     plan: Mapped[str] = mapped_column(String(10), nullable=False, default=UserPlan.FREE)
     plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

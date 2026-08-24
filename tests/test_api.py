@@ -31,11 +31,21 @@ def test_health(client):
 
 
 def test_signup_and_duplicates(client):
+    avatar_keys = []
     r = _signup(client, "leader1", "리더", "leader@test.io")
     assert r.status_code == 201, r.text
     assert r.json()["plan"] == "FREE"
-    assert _signup(client, "member2", "멤버", "member@test.io").status_code == 201
-    assert _signup(client, "other3", "아웃사이더", "other@test.io").status_code == 201
+    avatar_keys.append(r.json()["avatar_key"])
+    assert avatar_keys[-1]
+
+    r2 = _signup(client, "member2", "멤버", "member@test.io")
+    assert r2.status_code == 201
+    avatar_keys.append(r2.json()["avatar_key"])
+
+    r3 = _signup(client, "other3", "아웃사이더", "other@test.io")
+    assert r3.status_code == 201
+    avatar_keys.append(r3.json()["avatar_key"])
+    assert len(set(avatar_keys)) == 3
 
     assert _signup(client, "leader1", "다른닉", "x@test.io").json()["code"] == "DUPLICATE_LOGIN_ID"
     assert _signup(client, "newid99", "리더", "x@test.io").json()["code"] == "DUPLICATE_NICKNAME"

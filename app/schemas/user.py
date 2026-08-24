@@ -82,6 +82,7 @@ class UserResponse(ORMModel):
     name: str
     nickname: str
     email: str
+    avatar_key: str | None = None
     role: str
     plan: str
     plan_expires_at: datetime | None

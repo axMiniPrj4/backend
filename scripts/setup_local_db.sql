@@ -1,0 +1,5 @@
+CREATE DATABASE IF NOT EXISTS ohapjijol CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'ohap'@'localhost' IDENTIFIED BY 'dkagh1234';
+GRANT ALL PRIVILEGES ON ohapjijol.* TO 'ohap'@'localhost';
+FLUSH PRIVILEGES;
