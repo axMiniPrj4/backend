@@ -41,6 +41,7 @@ def create_project(body: ProjectCreateRequest, user: User = Depends(get_current_
         status=body.status,
         start_date=body.start_date,
         end_date=body.end_date,
+        color=body.color,
         code=generate_unique_code(db),
     )
     db.add(project)

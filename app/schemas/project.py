@@ -25,6 +25,7 @@ class ProjectCreateRequest(BaseModel):
     status: str = ProjectStatus.PLANNED
     start_date: date | None = None
     end_date: date | None = None
+    color: str | None = Field(default=None, max_length=20)
 
     _p = field_validator("priority")(_validate_priority)
     _s = field_validator("status")(_validate_status)
@@ -37,6 +38,7 @@ class ProjectUpdateRequest(BaseModel):
     status: str | None = None
     start_date: date | None = None
     end_date: date | None = None
+    color: str | None = Field(default=None, max_length=20)
 
     @field_validator("priority")
     @classmethod
@@ -77,6 +79,7 @@ class ProjectResponse(ORMModel):
     status: str
     start_date: date | None
     end_date: date | None
+    color: str | None = None
     created_at: datetime
 
 
@@ -90,6 +93,7 @@ class ProjectListItemResponse(ORMModel):
     status: str
     start_date: date | None
     end_date: date | None
+    color: str | None = None
     created_at: datetime
 
 

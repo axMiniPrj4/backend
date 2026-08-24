@@ -1,5 +1,4 @@
-from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -8,22 +7,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.deps import ProjectContext, get_project_context
 from app.core.errors import bad_request, forbidden, not_found
 from app.db.session import get_db
-from app.models import Doc, OprReport, OprRow, Task, TaskHistory, User
-from app.models.opr import OprSection
-from app.models.task import TaskStatus
-from app.schemas.opr import OprReportResponse, OprReportSaveRequest, OprRowInput, OprSourceResponse
+from app.models import Doc, OprReport, OprRow, Task
+from app.schemas.opr import OprReportResponse, OprReportSaveRequest, OprSourceResponse
 
 router = APIRouter(prefix="/api/projects/{project_id}/opr", tags=["OPR"])
-KST = ZoneInfo("Asia/Seoul")
-
-
-def _day_bounds_utc(report_date: date):
-    start_kst = datetime.combine(report_date, time.min, tzinfo=KST)
-    end_kst = start_kst + timedelta(days=1)
-    return (
-        start_kst.astimezone(timezone.utc).replace(tzinfo=None),
-        end_kst.astimezone(timezone.utc).replace(tzinfo=None),
-    )
 
 
 def _get_report(db: Session, project_id: int, report_date: date, author_id: int):
@@ -38,162 +25,48 @@ def _get_report(db: Session, project_id: int, report_date: date, author_id: int)
     )
 
 
-def _assignee_names(task: Task) -> str:
-    return ", ".join(user.nickname for user in task.assignees)
-
-
-def _task_row(task: Task, section_type: str, sort_order: int, *, report_date=None) -> OprRowInput:
-    status = "진행 중" if task.status == TaskStatus.IN_PROGRESS else "예정"
-    completed_date = None
-    planned_date = task.start_date
-    if section_type == OprSection.COMPLETED:
-        status = "완료"
-        completed_date = report_date
-    elif section_type == OprSection.ISSUE:
-        status = "지연"
-    return OprRowInput(
-        section_type=section_type,
-        content=task.title,
-        status=status,
-        assignee_name=_assignee_names(task),
-        planned_date=planned_date,
-        completed_date=completed_date,
-        task_id=task.id,
-        source="AUTO",
-        sort_order=sort_order,
-        issue_request="완료 예정일과 대응 방안을 확인해 주세요." if section_type == OprSection.ISSUE else None,
-    )
-
-
-def _carried_today_rows(
-    db: Session, project_id: int, author_id: int, report_date: date, start_index: int
-) -> list[OprRowInput]:
-    """가장 최근 저장분에서 완료되지 않은 수동 '오늘 할 일'을 오늘 날짜로 이월한다 (KnotQ Daily Queue 참고)."""
-    previous = db.scalar(
-        select(OprReport)
-        .where(
-            OprReport.project_id == project_id,
-            OprReport.author_id == author_id,
-            OprReport.report_date < report_date,
-        )
-        .options(selectinload(OprReport.rows))
-        .order_by(OprReport.report_date.desc())
-        .limit(1)
-    )
-    if previous is None:
-        return []
-    pending = [
-        row for row in previous.rows
-        if row.section_type == OprSection.TODAY and row.task_id is None and (row.status or "") != "완료"
-    ]
-    return [
-        OprRowInput(
-            section_type=OprSection.TODAY,
-            content=row.content,
-            status=row.status,
-            assignee_name=row.assignee_name,
-            planned_date=report_date,
-            artifact_link=row.artifact_link,
-            issue_request=row.issue_request,
-            source="CARRIED",
-            sort_order=start_index + index,
-        )
-        for index, row in enumerate(pending)
-    ]
-
-
 @router.get("/source/{report_date}", response_model=OprSourceResponse)
 def get_opr_source(
     report_date: date,
     ctx: ProjectContext = Depends(get_project_context),
+    _db: Session = Depends(get_db),
+):
+    """빈 OPR 초안용. Task/자료실을 할일 칸에 자동으로 채우지 않는다."""
+    return OprSourceResponse(project_id=ctx.project.id, report_date=report_date, rows=[])
+
+
+@router.get("/reports", response_model=list[OprReportResponse])
+def list_opr_reports(
+    start_date: date = Query(..., description="조회 시작일(포함)"),
+    end_date: date = Query(..., description="조회 종료일(포함)"),
+    scope: str = Query("me", description="me | team"),
+    task_id: int | None = Query(None),
+    ctx: ProjectContext = Depends(get_project_context),
     db: Session = Depends(get_db),
 ):
-    """선택 날짜의 Task·완료 이력·자료실을 OPR 편집 행으로 변환한다."""
-    tasks = list(
-        db.scalars(
-            select(Task)
-            .where(
-                Task.project_id == ctx.project.id,
-                Task.assignees.any(User.id == ctx.user.id),
-            )
-            .options(selectinload(Task.assignees))
-            .order_by(Task.start_date.asc(), Task.id.asc())
-        ).all()
-    )
-    task_by_id = {task.id: task for task in tasks}
-    tomorrow = report_date + timedelta(days=1)
-    rows: list[OprRowInput] = []
+    """일/주/월/프로젝트 기간 OPR 목록. 포트폴리오·엑셀 내보내기용."""
+    if end_date < start_date:
+        raise bad_request(message="종료일은 시작일보다 빠를 수 없습니다.")
+    if (end_date - start_date).days > 400:
+        raise bad_request(message="조회 기간은 최대 400일까지 가능합니다.")
+    if scope not in {"me", "team"}:
+        raise bad_request(message="scope는 me 또는 team 이어야 합니다.")
 
-    today_tasks = [
-        task for task in tasks
-        if task.status != TaskStatus.DONE and task.start_date <= report_date <= task.end_date
-    ]
-    rows.extend(_task_row(task, OprSection.TODAY, index, report_date=report_date) for index, task in enumerate(today_tasks))
-    rows.extend(_carried_today_rows(db, ctx.project.id, ctx.user.id, report_date, len(today_tasks)))
-
-    start_utc, end_utc = _day_bounds_utc(report_date)
-    completed_histories = db.scalars(
-        select(TaskHistory)
+    stmt = (
+        select(OprReport)
         .where(
-            TaskHistory.project_id == ctx.project.id,
-            TaskHistory.event_type == "STATUS",
-            TaskHistory.created_at >= start_utc,
-            TaskHistory.created_at < end_utc,
-            TaskHistory.message.contains("→ 완료"),
+            OprReport.project_id == ctx.project.id,
+            OprReport.report_date >= start_date,
+            OprReport.report_date <= end_date,
         )
-        .order_by(TaskHistory.created_at.asc(), TaskHistory.id.asc())
-    ).all()
-    completed_ids = list(dict.fromkeys(row.task_id for row in completed_histories))
-    completed_tasks = [task_by_id[task_id] for task_id in completed_ids if task_id in task_by_id]
-    rows.extend(
-        _task_row(task, OprSection.COMPLETED, index, report_date=report_date)
-        for index, task in enumerate(completed_tasks)
+        .options(selectinload(OprReport.rows), selectinload(OprReport.author))
+        .order_by(OprReport.report_date.asc(), OprReport.author_id.asc(), OprReport.id.asc())
     )
-
-    tomorrow_tasks = [
-        task for task in tasks
-        if task.status != TaskStatus.DONE and task.start_date <= tomorrow <= task.end_date
-    ]
-    rows.extend(
-        _task_row(task, OprSection.TOMORROW, index, report_date=report_date)
-        for index, task in enumerate(tomorrow_tasks)
-    )
-
-    docs = db.scalars(
-        select(Doc)
-        .where(
-            Doc.project_id == ctx.project.id,
-            Doc.user_id == ctx.user.id,
-            Doc.updated_at >= start_utc,
-            Doc.updated_at < end_utc,
-        )
-        .options(selectinload(Doc.versions))
-        .order_by(Doc.updated_at.asc(), Doc.id.asc())
-    ).all()
-    for index, doc in enumerate(docs):
-        latest = doc.latest_version
-        rows.append(
-            OprRowInput(
-                section_type=OprSection.ARTIFACT,
-                content=doc.title,
-                status="완료",
-                assignee_name=doc.author.nickname if doc.author else None,
-                completed_date=report_date,
-                artifact_link=f"/archive/{doc.id}",
-                doc_id=doc.id,
-                source="AUTO",
-                sort_order=index,
-                issue_request=latest.file_name if latest else None,
-            )
-        )
-
-    overdue_tasks = [task for task in tasks if task.status != TaskStatus.DONE and task.end_date < report_date]
-    rows.extend(
-        _task_row(task, OprSection.ISSUE, index, report_date=report_date)
-        for index, task in enumerate(overdue_tasks)
-    )
-
-    return OprSourceResponse(project_id=ctx.project.id, report_date=report_date, rows=rows)
+    if scope == "me":
+        stmt = stmt.where(OprReport.author_id == ctx.user.id)
+    if task_id is not None:
+        stmt = stmt.where(OprReport.rows.any(OprRow.task_id == task_id))
+    return list(db.scalars(stmt).all())
 
 
 @router.get("/{report_date}", response_model=OprReportResponse)

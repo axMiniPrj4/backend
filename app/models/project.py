@@ -52,6 +52,7 @@ class Project(Base, TimestampMixin, SoftDeleteMixin):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ProjectStatus.PLANNED)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     members: Mapped[list["ProjectMember"]] = relationship(back_populates="project", cascade="all, delete-orphan")
 

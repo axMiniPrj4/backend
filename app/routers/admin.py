@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, Query
+from datetime import date
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -8,12 +10,12 @@ from app.core.files import stream_download
 from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.core.security import hash_password
 from app.db.session import get_db
-from app.models import AnswerTemplate, Doc, DocVersion, Inquiry, LoginHistory, Notice, Payment, Project, ProjectMember, Task, User
+from app.models import AnswerTemplate, CalendarEvent, Doc, DocVersion, Inquiry, LoginHistory, Notice, OprReport, Payment, Project, ProjectMember, Task, User
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.inquiry import InquiryStatus
 from app.models.payment import PaymentMethod
 from app.models.project import MemberRole, ProjectStatus
-from app.models.task import TaskStatus
+from app.models.task import TaskPriority, TaskStatus
 from app.models.user import UserPlan, UserRole
 from app.schemas.admin_extra import (
     AdminAuditLogResponse,
@@ -28,15 +30,18 @@ from app.schemas.admin_extra import (
     AnswerTemplateResponse,
     AnswerTemplateUpdateRequest,
 )
+from app.schemas.collaboration import CalendarEventCreate, CalendarEventOut, CalendarEventUpdate
 from app.schemas.common import PageResponse
 from app.schemas.doc import ArchiveDocResponse, DocVersionResponse
 from app.schemas.inquiry import AnswerCreateRequest, AnswerResponse, InquiryResponse
 from app.schemas.notice import NoticeCreateRequest, NoticeResponse, NoticeUpdateRequest
+from app.schemas.opr import OprReportResponse
 from app.schemas.payment import AdminPaymentResponse
 from app.schemas.project import LeaderDelegateRequest, MemberResponse, ProjectResponse, ProjectUpdateRequest
 from app.schemas.task import TaskAssigneeResponse, TaskResponse, TaskStatusUpdateRequest, TaskUpdateRequest
 from app.schemas.user import AdminPasswordResetRequest, AdminUserUpdateRequest, LoginHistoryResponse, UserResponse
 from app.services.admin_audit import record_audit
+from app.services.avatar_service import AVATAR_KEYS
 from app.services.payment_service import apply_plan_change
 from app.services.project_service import cascade_delete_project
 from app.services.user_service import withdraw_user
@@ -88,6 +93,7 @@ def _task_to_response(task: Task) -> TaskResponse:
         title=task.title,
         content=task.content,
         status=task.status,
+        priority=getattr(task, "priority", None) or TaskPriority.MEDIUM,
         creator_id=task.creator_id,
         assignees=[TaskAssigneeResponse(id=u.id, nickname=u.nickname) for u in (task.assignees or [])],
         start_date=task.start_date,
@@ -232,6 +238,11 @@ def update_user(
             raise bad_request(message=f"plan은 {sorted(UserPlan.ALL)} 중 하나여야 합니다.")
         if data["plan"] != user.plan:
             apply_plan_change(db, user, next_plan=data["plan"], method=PaymentMethod.ADMIN)
+    if "avatar_key" in data:
+        key = data["avatar_key"]
+        if key is not None and key not in AVATAR_KEYS:
+            raise bad_request(message=f"avatar_key는 등록된 캐릭터 키 중 하나여야 합니다.")
+        user.avatar_key = key
     record_audit(db, admin, action="수정", target_type="user", target_id=user.id, target_label=user.name)
     db.commit()
     db.refresh(user)
@@ -543,8 +554,8 @@ def admin_create_task(
     from datetime import date as date_cls
 
     project = _require_project(db, project_id)
-    end = body.end_date or project.end_date or date_cls.today()
-    start = body.start_date or project.start_date or end
+    end = body.end_date or date_cls.today()
+    start = body.start_date or end
     if start > end:
         start = end
     assignee_id = body.assignee_id
@@ -566,6 +577,7 @@ def admin_create_task(
         start_date=start,
         end_date=end,
         status=body.status,
+        priority=TaskPriority.MEDIUM,
         assignees=assignees,
         category="기타",
         work_group="",
@@ -1021,3 +1033,128 @@ def list_payments(
         for p in items
     ]
     return page_data
+
+
+# ---------- Project OPR / Calendar (moderation) ----------
+
+
+def _get_admin_project(db: Session, project_id: int) -> Project:
+    project = db.get(Project, project_id)
+    if project is None or project.is_deleted:
+        raise not_found("프로젝트를 찾을 수 없습니다.")
+    return project
+
+
+@router.get("/projects/{project_id}/opr", response_model=list[OprReportResponse])
+def admin_list_project_opr(
+    project_id: int,
+    report_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    _get_admin_project(db, project_id)
+    stmt = (
+        select(OprReport)
+        .where(OprReport.project_id == project_id)
+        .options(selectinload(OprReport.rows), selectinload(OprReport.author))
+        .order_by(OprReport.report_date.desc(), OprReport.id.desc())
+    )
+    if report_date is not None:
+        stmt = stmt.where(OprReport.report_date == report_date)
+    return list(db.scalars(stmt).all())
+
+
+@router.delete("/projects/{project_id}/opr/{report_id}", status_code=204)
+def admin_delete_project_opr(
+    project_id: int,
+    report_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _get_admin_project(db, project_id)
+    report = db.scalar(
+        select(OprReport).where(OprReport.id == report_id, OprReport.project_id == project_id)
+    )
+    if report is None:
+        raise not_found("OPR을 찾을 수 없습니다.")
+    label = f"{report.report_date} · {report.author_nickname}"
+    db.delete(report)
+    record_audit(db, admin, action="삭제", target_type="opr", target_id=report_id, target_label=label)
+    db.commit()
+
+
+@router.get("/projects/{project_id}/calendar/events", response_model=list[CalendarEventOut])
+def admin_list_calendar_events(project_id: int, db: Session = Depends(get_db)):
+    _get_admin_project(db, project_id)
+    return list(
+        db.scalars(
+            select(CalendarEvent)
+            .where(CalendarEvent.project_id == project_id)
+            .order_by(CalendarEvent.event_date.asc(), CalendarEvent.id.asc())
+        ).all()
+    )
+
+
+@router.post("/projects/{project_id}/calendar/events", response_model=CalendarEventOut, status_code=201)
+def admin_create_calendar_event(
+    project_id: int,
+    body: CalendarEventCreate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _get_admin_project(db, project_id)
+    event = CalendarEvent(
+        project_id=project_id,
+        title=body.title,
+        event_date=body.event_date,
+        event_time=body.event_time,
+        description=body.description,
+        created_by=admin.id,
+    )
+    db.add(event)
+    db.flush()
+    record_audit(db, admin, action="생성", target_type="calendar", target_id=event.id, target_label=event.title)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+@router.patch("/projects/{project_id}/calendar/events/{event_id}", response_model=CalendarEventOut)
+def admin_update_calendar_event(
+    project_id: int,
+    event_id: int,
+    body: CalendarEventUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _get_admin_project(db, project_id)
+    event = db.scalar(
+        select(CalendarEvent).where(CalendarEvent.id == event_id, CalendarEvent.project_id == project_id)
+    )
+    if event is None:
+        raise not_found("일정을 찾을 수 없습니다.")
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(event, field, value)
+    record_audit(db, admin, action="수정", target_type="calendar", target_id=event.id, target_label=event.title)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+@router.delete("/projects/{project_id}/calendar/events/{event_id}", status_code=204)
+def admin_delete_calendar_event(
+    project_id: int,
+    event_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _get_admin_project(db, project_id)
+    event = db.scalar(
+        select(CalendarEvent).where(CalendarEvent.id == event_id, CalendarEvent.project_id == project_id)
+    )
+    if event is None:
+        raise not_found("일정을 찾을 수 없습니다.")
+    label = event.title
+    db.delete(event)
+    record_audit(db, admin, action="삭제", target_type="calendar", target_id=event_id, target_label=label)
+    db.commit()

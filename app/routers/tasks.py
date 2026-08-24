@@ -32,6 +32,12 @@ _STATUS_LABEL = {
     TaskStatus.DONE: "완료",
 }
 
+_PRIORITY_LABEL = {
+    TaskPriority.HIGH: "상",
+    TaskPriority.MEDIUM: "중",
+    TaskPriority.LOW: "하",
+}
+
 
 def _validate_dates(start, end, project=None):
     if start > end:
@@ -213,7 +219,11 @@ def update_task(
             task=task,
             actor_id=ctx.user.id,
             event_type="PRIORITY",
-            message=f"{ctx.user.nickname}님이 우선순위를 {prev_priority} → {task.priority}(으)로 변경했습니다.",
+            message=(
+                f"{ctx.user.nickname}님이 우선순위를 "
+                f"{_PRIORITY_LABEL.get(prev_priority, prev_priority)} → "
+                f"{_PRIORITY_LABEL.get(task.priority, task.priority)}(으)로 변경했습니다."
+            ),
         )
     db.commit()
     db.refresh(task)

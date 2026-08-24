@@ -97,6 +97,7 @@ class AdminUserUpdateRequest(BaseModel):
     email: EmailStr | None = None
     name: str | None = Field(default=None, min_length=1, max_length=50)
     plan: str | None = None
+    avatar_key: str | None = Field(default=None, max_length=50)
 
 
 class AdminPasswordResetRequest(BaseModel):

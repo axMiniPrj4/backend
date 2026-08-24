@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     # Redis: 미설정("") 시 인메모리 토큰 저장소로 폴백 (개발 전용)
     redis_url: str = ""
 
-    # JWT — 기준안 #1: Access 30분 / Refresh 7일 / RT 응답 body / 미회전
+    # JWT — Access 1일 / Refresh 7일 / RT 응답 body / 미회전
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 1440
     refresh_token_expire_days: int = 7
 
     # 파일 업로드
