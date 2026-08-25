@@ -365,6 +365,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
             name=m.user.name if m.user else "",
             nickname=m.user.nickname if m.user else "",
             role=m.role,
+            collab_permission=m.collab_permission,
             joined_at=m.joined_at,
         )
         for m in project.members
@@ -426,6 +427,7 @@ def _member_responses(db: Session, project_id: int) -> list[MemberResponse]:
             name=m.user.name if m.user else "",
             nickname=m.user.nickname if m.user else "",
             role=m.role,
+            collab_permission=m.collab_permission,
             joined_at=m.joined_at,
         )
         for m in rows
