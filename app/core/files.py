@@ -93,18 +93,38 @@ _CHUNK = 1024 * 1024
 # 확장자별 허용 MIME (브라우저별 편차 → octet-stream 허용)
 _EXT_MIME = {
     "pdf": {"application/pdf"},
-    "doc": {"application/msword"},
-    "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    # doc/xls/ppt(레거시 OLE) — 일부 OS/브라우저는 범용 오피스 MIME으로 보고
+    "doc": {"application/msword", "application/vnd.ms-office"},
+    # docx/xlsx/pptx/hwpx는 내부적으로 ZIP 컨테이너라 OS의 MIME 매핑이 없으면
+    # application/zip(-compressed)으로 보고되는 경우가 있음 — 함께 허용
+    "docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+        "application/x-zip-compressed",
+    },
     "txt": {"text/plain"},
     "md": {"text/plain", "text/markdown"},
     "rtf": {"application/rtf", "text/rtf"},
     "hwp": {"application/x-hwp", "application/haansofthwp"},
-    "hwpx": {"application/hwp+zip", "application/vnd.hancom.hwpx"},
-    "xls": {"application/vnd.ms-excel"},
-    "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "hwpx": {
+        "application/hwp+zip",
+        "application/vnd.hancom.hwpx",
+        "application/zip",
+        "application/x-zip-compressed",
+    },
+    "xls": {"application/vnd.ms-excel", "application/vnd.ms-office"},
+    "xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+        "application/x-zip-compressed",
+    },
     "csv": {"text/csv", "text/plain", "application/csv"},
-    "ppt": {"application/vnd.ms-powerpoint"},
-    "pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    "ppt": {"application/vnd.ms-powerpoint", "application/vnd.ms-office"},
+    "pptx": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/zip",
+        "application/x-zip-compressed",
+    },
     "png": {"image/png"},
     "jpg": {"image/jpeg"},
     "jpeg": {"image/jpeg"},
@@ -125,9 +145,9 @@ _EXT_MIME = {
     "ini": {"text/plain"},
     "cfg": {"text/plain"},
     "conf": {"text/plain"},
-    "sh": {"text/x-shellscript", "application/x-sh", "text/plain"},
-    "bash": {"text/x-shellscript", "application/x-sh", "text/plain"},
-    "zsh": {"text/x-shellscript", "application/x-sh", "text/plain"},
+    "sh": {"text/x-shellscript", "text/x-sh", "application/x-sh", "text/plain"},
+    "bash": {"text/x-shellscript", "text/x-sh", "application/x-sh", "text/plain"},
+    "zsh": {"text/x-shellscript", "text/x-sh", "application/x-sh", "text/plain"},
     "ps1": {"text/plain", "application/x-powershell"},
     "bat": {"text/plain", "application/x-bat", "application/bat"},
     "cmd": {"text/plain", "application/x-bat"},
@@ -188,7 +208,11 @@ def save_upload(file: UploadFile, subdir: str) -> StoredFile:
         raise bad_request(ErrorCode.INVALID_FILE_TYPE, f"허용되지 않는 확장자입니다: {ext}")
     content_type = (file.content_type or "").lower()
     allowed_mimes = _EXT_MIME.get(ext, set())
-    if content_type not in _GENERIC_MIMES and content_type not in allowed_mimes:
+    # 텍스트 계열 확장자(text/plain을 이미 허용 목록에 포함)는 브라우저/OS마다 MIME 추측이
+    # 제각각이라(예: .sh -> text/x-sh) 알려진 값이 아니어도 text/*이면 통과시킨다.
+    # 바이너리 확장자(pdf/docx/zip 등)는 text/plain이 목록에 없어 영향 없음.
+    is_lenient_text = content_type.startswith("text/") and "text/plain" in allowed_mimes
+    if content_type not in _GENERIC_MIMES and content_type not in allowed_mimes and not is_lenient_text:
         raise bad_request(ErrorCode.INVALID_FILE_TYPE, f"허용되지 않는 MIME 타입입니다: {content_type}")
 
     root = _upload_root()
