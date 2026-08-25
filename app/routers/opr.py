@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import ProjectContext, get_project_context
@@ -108,11 +108,28 @@ def _validate_linked_resources(db: Session, project_id: int, body: OprReportSave
     task_ids = {row.task_id for row in body.rows if row.task_id is not None}
     doc_ids = {row.doc_id for row in body.rows if row.doc_id is not None}
     if task_ids:
-        valid_task_ids = set(db.scalars(select(Task.id).where(Task.project_id == project_id, Task.id.in_(task_ids))))
+        # 삭제된 Task도 같은 프로젝트면 기존 OPR 행 재저장(자료 해제 등)을 허용
+        valid_task_ids = set(
+            db.scalars(
+                select(Task.id)
+                .where(Task.project_id == project_id, Task.id.in_(task_ids))
+                .execution_options(include_deleted=True)
+            )
+        )
         if valid_task_ids != task_ids:
             raise bad_request(message="다른 프로젝트의 Task는 OPR에 연결할 수 없습니다.")
     if doc_ids:
-        valid_doc_ids = set(db.scalars(select(Doc.id).where(Doc.project_id == project_id, Doc.id.in_(doc_ids))))
+        # 프로젝트 자료 + 공통 자료(project_id NULL) 허용
+        valid_doc_ids = set(
+            db.scalars(
+                select(Doc.id)
+                .where(
+                    Doc.id.in_(doc_ids),
+                    or_(Doc.project_id == project_id, Doc.project_id.is_(None)),
+                )
+                .execution_options(include_deleted=True)
+            )
+        )
         if valid_doc_ids != doc_ids:
             raise bad_request(message="다른 프로젝트의 자료는 OPR에 연결할 수 없습니다.")
 

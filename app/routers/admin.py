@@ -95,7 +95,7 @@ def _task_to_response(task: Task) -> TaskResponse:
         status=task.status,
         priority=getattr(task, "priority", None) or TaskPriority.MEDIUM,
         creator_id=task.creator_id,
-        assignees=[TaskAssigneeResponse(id=u.id, nickname=u.nickname) for u in (task.assignees or [])],
+        assignees=[TaskAssigneeResponse(id=u.id, nickname=u.nickname, name=u.name) for u in (task.assignees or [])],
         start_date=task.start_date,
         end_date=task.end_date,
         category=getattr(task, "category", None) or "기타",

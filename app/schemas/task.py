@@ -61,6 +61,7 @@ class TaskStatusUpdateRequest(BaseModel):
 class TaskAssigneeResponse(ORMModel):
     id: int
     nickname: str
+    name: str | None = None
 
 
 class TaskResponse(ORMModel):

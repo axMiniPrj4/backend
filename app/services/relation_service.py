@@ -21,13 +21,17 @@ def _get_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
 
 
 def _get_doc(db: Session, ctx: ProjectContext, doc_id: int) -> Doc:
+    """프로젝트 자료 또는 공통 자료(project_id NULL) 연결 허용."""
     doc = db.scalar(
         select(Doc)
-        .where(Doc.id == doc_id, Doc.project_id == ctx.project.id)
+        .where(
+            Doc.id == doc_id,
+            or_(Doc.project_id == ctx.project.id, Doc.project_id.is_(None)),
+        )
         .options(selectinload(Doc.versions))
     )
     if doc is None:
-        raise not_found("프로젝트 자료를 찾을 수 없습니다.")
+        raise not_found("프로젝트·공통 자료를 찾을 수 없습니다.")
     return doc
 
 
