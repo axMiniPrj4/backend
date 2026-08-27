@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Index, String, Table, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Index, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, BigIntPK, SoftDeleteMixin, TimestampMixin, utcnow
@@ -59,6 +59,14 @@ class Task(Base, TimestampMixin, SoftDeleteMixin):
     work_group: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
     priority: Mapped[str] = mapped_column(String(10), nullable=False, default=TaskPriority.MEDIUM)
+    # WBS 표시 순서 — 세부작업 행 순서이자, 작업(work_group) 그룹의 순서 기준.
+    # 그룹 순서는 그룹에 속한 작업들의 최소 sort_order로 결정된다(별도 컬럼 없음).
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # 다중 담당자 중 대표 1명(주담당자). assignees 안에 포함된 id여야 한다.
+    primary_assignee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("user.id"), nullable=True
+    )
 
     creator: Mapped["User"] = relationship(foreign_keys=[creator_id])
     assignees: Mapped[list["User"]] = relationship(secondary=task_assignee, order_by="User.id")

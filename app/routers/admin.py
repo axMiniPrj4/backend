@@ -101,6 +101,8 @@ def _task_to_response(task: Task) -> TaskResponse:
         category=getattr(task, "category", None) or "기타",
         work_group=getattr(task, "work_group", None) or "",
         color=getattr(task, "color", None),
+        sort_order=getattr(task, "sort_order", 0) or 0,
+        primary_assignee_id=getattr(task, "primary_assignee_id", None),
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -583,6 +585,7 @@ def admin_create_task(
         assignees=assignees,
         category="기타",
         work_group="",
+        primary_assignee_id=assignees[0].id if assignees else None,
     )
     db.add(task)
     record_audit(
@@ -622,6 +625,9 @@ def admin_update_task(
         if not ids:
             raise bad_request(message="담당자는 최소 1명이어야 합니다.")
         task.assignees = _resolve_admin_assignees(db, project_id, ids)
+        # 주담당자가 담당자 목록에서 빠졌으면 첫 담당자로 되돌린다.
+        if task.primary_assignee_id not in task.assignee_ids:
+            task.primary_assignee_id = task.assignees[0].id if task.assignees else None
     for field, value in data.items():
         setattr(task, field, value)
     record_audit(

@@ -26,7 +26,9 @@ class Settings(BaseSettings):
 
     # 파일 업로드
     upload_dir: str = "./uploads"
-    max_file_size: int = 50 * 1024 * 1024  # 50MB
+    # 실제 운영값은 .env 의 MAX_FILE_SIZE 가 덮어쓴다. 프론트
+    # archiveFileAccept.js 의 ARCHIVE_MAX_FILE_SIZE_MB 와 반드시 일치시켜야 한다.
+    max_file_size: int = 500 * 1024 * 1024  # 500MB
 
     # CORS
     cors_origins: str = "*"  # 콤마 구분 목록

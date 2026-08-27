@@ -28,6 +28,8 @@ class TaskCreateRequest(BaseModel):
     work_group: str | None = Field(default="", max_length=100)
     color: str | None = Field(default=None, max_length=20)
     priority: str = TaskPriority.MEDIUM
+    # 미지정 시 assignee_ids 첫 번째가 주담당자가 된다.
+    primary_assignee_id: int | None = None
 
     @field_validator("priority")
     @classmethod
@@ -45,11 +47,23 @@ class TaskUpdateRequest(BaseModel):
     work_group: str | None = Field(default=None, max_length=100)
     color: str | None = Field(default=None, max_length=20)
     priority: str | None = Field(default=None, max_length=10)
+    primary_assignee_id: int | None = None
 
     @field_validator("priority")
     @classmethod
     def _priority(cls, v):
         return _validate_priority(v) if v is not None else v
+
+
+class TaskReorderItem(BaseModel):
+    id: int
+    sort_order: int = Field(ge=0)
+    # 세부작업을 다른 작업(work_group)으로 옮기는 경우에만 지정. 구분(category)은 변경 불가.
+    work_group: str | None = Field(default=None, max_length=100)
+
+
+class TaskReorderRequest(BaseModel):
+    items: list[TaskReorderItem] = Field(min_length=1)
 
 
 class TaskStatusUpdateRequest(BaseModel):
@@ -78,6 +92,8 @@ class TaskResponse(ORMModel):
     category: str
     work_group: str
     color: str | None
+    sort_order: int = 0
+    primary_assignee_id: int | None = None
     created_at: datetime
     updated_at: datetime
 

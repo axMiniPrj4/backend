@@ -94,36 +94,55 @@ _CHUNK = 1024 * 1024
 _EXT_MIME = {
     "pdf": {"application/pdf"},
     # doc/xls/ppt(레거시 OLE) — 일부 OS/브라우저는 범용 오피스 MIME으로 보고
-    "doc": {"application/msword", "application/vnd.ms-office"},
+    "doc": {
+        "application/haansoftdoc","application/msword", "application/vnd.ms-office"},
     # docx/xlsx/pptx/hwpx는 내부적으로 ZIP 컨테이너라 OS의 MIME 매핑이 없으면
     # application/zip(-compressed)으로 보고되는 경우가 있음 — 함께 허용
     "docx": {
+        "application/haansoftdocx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/zip",
         "application/x-zip-compressed",
+        # 일부 Windows 는 레지스트리 매핑이 틀어져 docx 를 구형/범용 오피스 MIME 으로 보고한다
+        "application/msword",
+        "application/vnd.ms-word.document.12",
+        "application/vnd.ms-office",
     },
     "txt": {"text/plain"},
     "md": {"text/plain", "text/markdown"},
     "rtf": {"application/rtf", "text/rtf"},
     "hwp": {"application/x-hwp", "application/haansofthwp"},
     "hwpx": {
+        "application/haansofthwpx",
         "application/hwp+zip",
         "application/vnd.hancom.hwpx",
         "application/zip",
         "application/x-zip-compressed",
     },
-    "xls": {"application/vnd.ms-excel", "application/vnd.ms-office"},
+    "xls": {
+        "application/haansoftxls","application/vnd.ms-excel", "application/vnd.ms-office"},
     "xlsx": {
+        "application/haansoftxlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/zip",
         "application/x-zip-compressed",
+        # docx 와 동일한 오매핑 사례
+        "application/vnd.ms-excel",
+        "application/vnd.ms-excel.sheet.macroenabled.12",
+        "application/vnd.ms-office",
     },
     "csv": {"text/csv", "text/plain", "application/csv"},
-    "ppt": {"application/vnd.ms-powerpoint", "application/vnd.ms-office"},
+    "ppt": {
+        "application/haansoftppt","application/vnd.ms-powerpoint", "application/vnd.ms-office"},
     "pptx": {
+        "application/haansoftpptx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/zip",
         "application/x-zip-compressed",
+        # docx 와 동일한 오매핑 사례
+        "application/vnd.ms-powerpoint",
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+        "application/vnd.ms-office",
     },
     "png": {"image/png"},
     "jpg": {"image/jpeg"},
@@ -183,6 +202,74 @@ _EXT_MIME = {
 }
 _GENERIC_MIMES = {"application/octet-stream", None, ""}
 
+# MIME 검사를 참고용으로만 쓰는 확장자.
+# 브라우저·OS·설치된 오피스(MS/한컴)에 따라 Content-Type 이 제각각이라
+# 정상 파일이 거부되는 사례가 반복됐다. 확장자 화이트리스트가 실제 방어선이며,
+# Content-Type 은 클라이언트가 임의로 보낼 수 있어 보안 가치가 낮다.
+# 이미지 계열은 MIME 이 안정적이라 제외(엄격 검사 유지).
+_MIME_ADVISORY_EXTS = {
+    "pdf", "doc", "docx", "txt", "md", "rtf", "hwp", "hwpx",
+    "xls", "xlsx", "csv", "ppt", "pptx",
+    "zip", "7z", "rar",
+    "json", "xml", "html", "htm", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "sh", "bash", "zsh", "ps1", "bat", "cmd", "py", "js", "jsx", "mjs", "cjs",
+    "ts", "tsx", "java", "kt", "go", "rs", "rb", "php", "pl", "lua", "r", "sql",
+    "c", "h", "cpp", "hpp", "cc", "cs", "swift", "vue", "svelte", "ipynb",
+    "gradle", "groovy",
+}
+
+
+# 확장자별 정규 MIME — 저장·다운로드에 사용한다.
+# 클라이언트가 보낸 Content-Type 은 신뢰하지 않고 이 표에서 유도한다.
+_CANONICAL_MIME = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "rtf": "application/rtf",
+    "hwp": "application/x-hwp",
+    "hwpx": "application/hwp+zip",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "svg": "image/svg+xml",
+    "zip": "application/zip",
+    "7z": "application/x-7z-compressed",
+    "rar": "application/vnd.rar",
+    "json": "application/json",
+    "ipynb": "application/json",
+    "xml": "application/xml",
+    "html": "text/html",
+    "htm": "text/html",
+}
+
+# 위 표에 없고 텍스트로 다뤄도 되는 확장자(설정·소스코드)는 text/plain 으로 통일
+_TEXTLIKE_EXTS = {
+    "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "sh", "bash", "zsh", "ps1", "bat", "cmd", "py", "js", "jsx", "mjs", "cjs",
+    "ts", "tsx", "java", "kt", "go", "rs", "rb", "php", "pl", "lua", "r", "sql",
+    "c", "h", "cpp", "hpp", "cc", "cs", "swift", "vue", "svelte",
+    "gradle", "groovy",
+}
+
+
+def canonical_mime(ext: str) -> str:
+    """확장자에서 응답에 쓸 MIME 을 정한다(클라이언트 값 미신뢰)."""
+    if ext in _CANONICAL_MIME:
+        return _CANONICAL_MIME[ext]
+    if ext in _TEXTLIKE_EXTS:
+        return "text/plain"
+    return "application/octet-stream"
+
 
 @dataclass
 class StoredFile:
@@ -206,14 +293,11 @@ def save_upload(file: UploadFile, subdir: str) -> StoredFile:
     ext = original.rsplit(".", 1)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise bad_request(ErrorCode.INVALID_FILE_TYPE, f"허용되지 않는 확장자입니다: {ext}")
-    content_type = (file.content_type or "").lower()
-    allowed_mimes = _EXT_MIME.get(ext, set())
-    # 텍스트 계열 확장자(text/plain을 이미 허용 목록에 포함)는 브라우저/OS마다 MIME 추측이
-    # 제각각이라(예: .sh -> text/x-sh) 알려진 값이 아니어도 text/*이면 통과시킨다.
-    # 바이너리 확장자(pdf/docx/zip 등)는 text/plain이 목록에 없어 영향 없음.
-    is_lenient_text = content_type.startswith("text/") and "text/plain" in allowed_mimes
-    if content_type not in _GENERIC_MIMES and content_type not in allowed_mimes and not is_lenient_text:
-        raise bad_request(ErrorCode.INVALID_FILE_TYPE, f"허용되지 않는 MIME 타입입니다: {content_type}")
+    # Content-Type 은 클라이언트가 임의로 보낼 수 있어 검증에 쓰지 않는다.
+    # 확장자 화이트리스트(ALLOWED_EXTENSIONS)가 실제 방어선이며,
+    # 응답에 쓸 MIME 은 아래에서 확장자로부터 유도한다.
+    # (브라우저·OS·설치된 오피스에 따라 docx -> application/haansoftdocx,
+    #  application/msword 등으로 제각각 보고되어 정상 파일이 거부되던 문제 제거)
 
     root = _upload_root()
     directory = root / subdir
@@ -239,11 +323,7 @@ def save_upload(file: UploadFile, subdir: str) -> StoredFile:
     except Exception:
         dest.unlink(missing_ok=True)
         raise
-    mime = (
-        content_type
-        if content_type not in _GENERIC_MIMES
-        else next(iter(allowed_mimes or {"application/octet-stream"}))
-    )
+    mime = canonical_mime(ext)
     return StoredFile(file_name=original, stored_name=stored_name, file_size=size, mime_type=mime)
 
 

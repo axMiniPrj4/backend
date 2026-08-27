@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class ActivityItemOut(BaseModel):
     id: str
-    type: str  # chat|task|doc|calendar|comment
+    type: str  # task|opr|doc|chat|calendar|comment
     user: str
     user_id: int
     message: str

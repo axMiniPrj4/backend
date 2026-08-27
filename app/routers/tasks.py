@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import ProjectContext, get_project_context
@@ -15,6 +15,7 @@ from app.schemas.task import (
     TaskAssigneeResponse,
     TaskCreateRequest,
     TaskHistoryResponse,
+    TaskReorderRequest,
     TaskResponse,
     TaskStatusUpdateRequest,
     TaskUpdateRequest,
@@ -24,7 +25,7 @@ from app.services.task_history import add_task_history
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["Task"])
 
-_SORT_FIELDS = {"id", "created_at", "title", "status", "start_date", "end_date", "priority"}
+_SORT_FIELDS = {"id", "sort_order", "created_at", "title", "status", "start_date", "end_date", "priority"}
 
 _STATUS_LABEL = {
     TaskStatus.TODO: "할 일",
@@ -68,6 +69,16 @@ def _validate_dates(start, end, project=None):
         )
 
 
+def _next_sort_order(db: Session, project_id: int) -> int:
+    """프로젝트 내 마지막 순서 + 1 (신규 작업은 목록 맨 아래)."""
+    current = db.scalar(
+        select(func.max(Task.sort_order)).where(
+            Task.project_id == project_id, Task.deleted_at.is_(None)
+        )
+    )
+    return int(current or 0) + 1
+
+
 def _resolve_assignees(db: Session, project_id: int, assignee_ids: list[int]) -> list[User]:
     """담당자 목록 검증 — 전원이 프로젝트 멤버여야 한다. 중복은 제거."""
     ids = list(dict.fromkeys(assignee_ids))
@@ -82,6 +93,18 @@ def _resolve_assignees(db: Session, project_id: int, assignee_ids: list[int]) ->
     if invalid:
         raise bad_request(message=f"담당자는 프로젝트 멤버여야 합니다: {invalid}")
     return list(db.scalars(select(User).where(User.id.in_(ids))))
+
+
+def _pick_primary(assignees: list[User], requested: int | None) -> int | None:
+    """주담당자 결정 — 요청값이 담당자 목록에 있으면 그것, 없으면 첫 담당자."""
+    ids = [u.id for u in assignees]
+    if not ids:
+        return None
+    if requested is not None:
+        if requested not in ids:
+            raise bad_request(message="주담당자는 담당자 중에서 선택해야 합니다.")
+        return requested
+    return ids[0]
 
 
 def _get_task(db: Session, ctx: ProjectContext, task_id: int) -> Task:
@@ -113,6 +136,8 @@ def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_proje
         work_group=(body.work_group or "").strip(),
         color=body.color,
         priority=body.priority or TaskPriority.MEDIUM,
+        sort_order=_next_sort_order(db, ctx.project.id),
+        primary_assignee_id=_pick_primary(assignees, body.primary_assignee_id),
     )
     db.add(task)
     db.flush()
@@ -156,6 +181,41 @@ def list_tasks(
     return paginate(db, stmt, Task, params)
 
 
+@router.patch("/tasks/reorder", response_model=list[TaskResponse])
+def reorder_tasks(
+    body: TaskReorderRequest,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    """WBS 행 순서 일괄 저장. 개별 PATCH를 반복하면 중간 실패 시 순서가 깨지므로 한 번에 처리."""
+    if not ctx.is_editor:
+        raise forbidden("보기 권한만 있어 순서를 변경할 수 없습니다.")
+
+    ids = [item.id for item in body.items]
+    if len(set(ids)) != len(ids):
+        raise bad_request(message="같은 작업이 중복으로 전달되었습니다.")
+
+    rows = db.scalars(
+        select(Task)
+        .where(Task.project_id == ctx.project.id, Task.id.in_(ids))
+        .options(selectinload(Task.assignees))
+    ).all()
+    by_id = {task.id: task for task in rows}
+    missing = [task_id for task_id in ids if task_id not in by_id]
+    if missing:
+        raise not_found(f"작업을 찾을 수 없습니다: {missing}")
+
+    for item in body.items:
+        task = by_id[item.id]
+        task.sort_order = item.sort_order
+        # 구분(category)은 어떤 경우에도 변경하지 않는다.
+        if item.work_group is not None:
+            task.work_group = item.work_group.strip()
+
+    db.commit()
+    return sorted(rows, key=lambda t: (t.sort_order, t.id))
+
+
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 def get_task(task_id: int, ctx: ProjectContext = Depends(get_project_context), db: Session = Depends(get_db)):
     return _get_task(db, ctx, task_id)
@@ -175,11 +235,19 @@ def update_task(
     data = body.model_dump(exclude_unset=True)
     prev_assignee_ids = set(task.assignee_ids)
     prev_priority = task.priority
+    requested_primary = data.pop("primary_assignee_id", None)
+    primary_explicit = "primary_assignee_id" in body.model_fields_set
     if "assignee_ids" in data:
         ids = data.pop("assignee_ids")
         if not ids:
             raise bad_request(message="담당자는 최소 1명이어야 합니다.")
         task.assignees = _resolve_assignees(db, ctx.project.id, ids)
+    # 담당자가 바뀌면 기존 주담당자가 목록에서 빠질 수 있으므로 항상 재검증한다.
+    if primary_explicit or task.primary_assignee_id not in task.assignee_ids:
+        task.primary_assignee_id = _pick_primary(
+            task.assignees,
+            requested_primary if primary_explicit else None,
+        )
     if "category" in data and data["category"] is not None:
         data["category"] = str(data["category"]).strip() or "기타"
     if "work_group" in data and data["work_group"] is not None:
