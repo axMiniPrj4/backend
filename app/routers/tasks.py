@@ -24,7 +24,7 @@ from app.services.task_history import add_task_history
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["Task"])
 
-_SORT_FIELDS = {"created_at", "title", "status", "start_date", "end_date", "priority"}
+_SORT_FIELDS = {"id", "created_at", "title", "status", "start_date", "end_date", "priority"}
 
 _STATUS_LABEL = {
     TaskStatus.TODO: "할 일",
@@ -169,9 +169,9 @@ def update_task(
     db: Session = Depends(get_db),
 ):
     task = _get_task(db, ctx, task_id)
-    # ④ 리소스 소유권: 작성자 또는 LEADER
-    if not (ctx.is_leader or task.creator_id == ctx.user.id):
-        raise forbidden("작성자 또는 팀장만 수정할 수 있습니다.")
+    # ④ 편집 권한: 프로젝트 편집자(EDITOR) 또는 LEADER — VIEWER만 차단
+    if not ctx.is_editor:
+        raise forbidden("보기 권한만 있어 편집할 수 없습니다.")
     data = body.model_dump(exclude_unset=True)
     prev_assignee_ids = set(task.assignee_ids)
     prev_priority = task.priority
@@ -238,9 +238,9 @@ def update_task_status(
     db: Session = Depends(get_db),
 ):
     task = _get_task(db, ctx, task_id)
-    # ④ 상태 변경 권한: 담당자 중 한 명 또는 LEADER (수정과 주체가 달라 엔드포인트 분리)
-    if not (ctx.is_leader or ctx.user.id in task.assignee_ids):
-        raise forbidden("담당자 또는 팀장만 상태를 변경할 수 있습니다.")
+    # ④ 상태 변경 권한: 프로젝트 편집자(EDITOR) 또는 LEADER — VIEWER만 차단
+    if not ctx.is_editor:
+        raise forbidden("보기 권한만 있어 상태를 변경할 수 없습니다.")
     if body.status == TaskStatus.DONE and not task.assignee_ids:
         raise bad_request(
             ErrorCode.VALIDATION_ERROR,
@@ -292,8 +292,8 @@ def list_task_history(
 @router.delete("/tasks/{task_id}", status_code=204)
 def delete_task(task_id: int, ctx: ProjectContext = Depends(get_project_context), db: Session = Depends(get_db)):
     task = _get_task(db, ctx, task_id)
-    if not (ctx.is_leader or task.creator_id == ctx.user.id):
-        raise forbidden("작성자 또는 팀장만 삭제할 수 있습니다.")
+    if not ctx.is_editor:
+        raise forbidden("보기 권한만 있어 삭제할 수 없습니다.")
     task.soft_delete()
     db.commit()
 

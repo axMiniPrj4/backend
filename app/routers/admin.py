@@ -356,7 +356,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
             select(Task)
             .where(Task.project_id == project_id)
             .options(selectinload(Task.assignees))
-            .order_by(Task.id.desc())
+            .order_by(Task.id.asc())
         )
     )
     members = [
