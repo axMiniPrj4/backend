@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.models.opr import OprReportStatus, OprSection
 from app.schemas.common import ORMModel
+from app.schemas.opr_ai import OprAiRecordInput, OprAiRecordResponse
 
 
 class OprRowInput(BaseModel):
@@ -17,6 +18,8 @@ class OprRowInput(BaseModel):
     issue_request: str | None = Field(default=None, max_length=5000)
     task_id: int | None = None
     doc_id: int | None = None
+    # 한 행에 여러 산출물을 연결한다. doc_id 는 대표(첫 번째)로 계속 채운다.
+    doc_ids: list[int] = Field(default_factory=list, max_length=30)
     source: str = Field(default="MANUAL", max_length=20)
     sort_order: int = Field(default=0, ge=0)
 
@@ -31,6 +34,9 @@ class OprRowInput(BaseModel):
 class OprReportSaveRequest(BaseModel):
     status: str = OprReportStatus.DRAFT
     rows: list[OprRowInput] = Field(default_factory=list, max_length=500)
+    # None 이면 AI 기록을 건드리지 않는다. 목록을 보내면 그 목록으로 맞춘다
+    # (id 있으면 갱신 / 없으면 생성 / 목록에 없는 기존 기록은 삭제).
+    ai_records: list[OprAiRecordInput] | None = Field(default=None, max_length=50)
 
     @field_validator("status")
     @classmethod
@@ -52,6 +58,7 @@ class OprRowResponse(ORMModel):
     issue_request: str | None
     task_id: int | None
     doc_id: int | None
+    doc_ids: list[int] = Field(default_factory=list)
     source: str
     sort_order: int
 
@@ -65,6 +72,7 @@ class OprReportResponse(ORMModel):
     author_nickname: str
     author_name: str | None = None
     rows: list[OprRowResponse]
+    ai_records: list[OprAiRecordResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

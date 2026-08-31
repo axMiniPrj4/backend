@@ -7,10 +7,22 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.deps import ProjectContext, get_project_context
 from app.core.errors import bad_request, forbidden, not_found
 from app.db.session import get_db
-from app.models import Doc, OprReport, OprRow, Task
+from app.models import Doc, OprReport, OprRow, OprRowDoc, Task
+from app.models.opr_ai import OprAiRecord
 from app.schemas.opr import OprReportResponse, OprReportSaveRequest, OprSourceResponse
+from app.schemas.opr_ai import OprAiRecordInput, OprAiRecordResponse, OprAiRecordUpdate
+from app.services import opr_ai_service
 
 router = APIRouter(prefix="/api/projects/{project_id}/opr", tags=["OPR"])
+
+# 응답에 AI 기록까지 담기므로 조회 3곳에서 같은 eager load 를 쓴다 (N+1 방지)
+_REPORT_LOAD = (
+    selectinload(OprReport.rows).selectinload(OprRow.doc_links),
+    selectinload(OprReport.author),
+    selectinload(OprReport.ai_records).selectinload(OprAiRecord.providers),
+    selectinload(OprReport.ai_records).selectinload(OprAiRecord.task_links),
+    selectinload(OprReport.ai_records).selectinload(OprAiRecord.doc_links),
+)
 
 
 def _get_report(db: Session, project_id: int, report_date: date, author_id: int):
@@ -21,7 +33,7 @@ def _get_report(db: Session, project_id: int, report_date: date, author_id: int)
             OprReport.report_date == report_date,
             OprReport.author_id == author_id,
         )
-        .options(selectinload(OprReport.rows), selectinload(OprReport.author))
+        .options(*_REPORT_LOAD)
     )
 
 
@@ -59,7 +71,7 @@ def list_opr_reports(
             OprReport.report_date >= start_date,
             OprReport.report_date <= end_date,
         )
-        .options(selectinload(OprReport.rows), selectinload(OprReport.author))
+        .options(*_REPORT_LOAD)
         .order_by(OprReport.report_date.asc(), OprReport.author_id.asc(), OprReport.id.asc())
     )
     if scope == "me":
@@ -93,7 +105,7 @@ def get_team_opr(
     stmt = (
         select(OprReport)
         .where(OprReport.project_id == ctx.project.id, OprReport.report_date == report_date)
-        .options(selectinload(OprReport.rows), selectinload(OprReport.author))
+        .options(*_REPORT_LOAD)
         .order_by(OprReport.author_id.asc(), OprReport.id.asc())
     )
     if task_id is not None:
@@ -107,6 +119,8 @@ def get_team_opr(
 def _validate_linked_resources(db: Session, project_id: int, body: OprReportSaveRequest) -> None:
     task_ids = {row.task_id for row in body.rows if row.task_id is not None}
     doc_ids = {row.doc_id for row in body.rows if row.doc_id is not None}
+    for row in body.rows:
+        doc_ids.update(row.doc_ids)
     if task_ids:
         # 삭제된 Task도 같은 프로젝트면 기존 OPR 행 재저장(자료 해제 등)을 허용
         valid_task_ids = set(
@@ -166,12 +180,23 @@ def save_opr(
             artifact_link=row.artifact_link,
             issue_request=row.issue_request,
             task_id=row.task_id,
-            doc_id=row.doc_id,
+            doc_id=row.doc_id if row.doc_id is not None else (row.doc_ids[0] if row.doc_ids else None),
+            doc_links=[
+                OprRowDoc(doc_id=doc_id)
+                for doc_id in dict.fromkeys(
+                    ([row.doc_id] if row.doc_id is not None else []) + list(row.doc_ids)
+                )
+            ],
             source=row.source,
             sort_order=index,
         )
         for index, row in enumerate(body.rows)
     )
+
+    if body.ai_records is not None:
+        # 관계 컬렉션으로 붙이므로 신규 OPR 이라도 report_id 를 미리 만들 필요가 없다
+        opr_ai_service.apply_records(db, report, ctx.project.id, body.ai_records)
+
     db.commit()
     return _get_report(db, ctx.project.id, report_date, ctx.user.id)
 
@@ -189,3 +214,51 @@ def delete_opr(
         raise forbidden("작성자 또는 팀장만 OPR을 삭제할 수 있습니다.")
     db.delete(report)
     db.commit()
+
+
+# ── AI 사용 기록 ────────────────────────────────────────────────────
+# 경로는 relations 라우터의 /opr/reports/{report_id}/docs/{doc_id} 규칙을 따른다.
+# 같은 데이터를 PUT /{report_date} 의 ai_records 로도 통째 저장할 수 있다.
+# 조회는 프로젝트 멤버면 가능(팀 OPR 화면), 생성·수정·삭제는 OPR 작성자만 가능.
+
+
+@router.get("/reports/{report_id}/ai-records", response_model=list[OprAiRecordResponse])
+def list_ai_records(
+    report_id: int,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    return opr_ai_service.list_records(db, ctx, report_id)
+
+
+@router.post(
+    "/reports/{report_id}/ai-records", response_model=OprAiRecordResponse, status_code=201
+)
+def create_ai_record(
+    report_id: int,
+    body: OprAiRecordInput,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    return opr_ai_service.create_record(db, ctx, report_id, body)
+
+
+@router.patch("/reports/{report_id}/ai-records/{record_id}", response_model=OprAiRecordResponse)
+def update_ai_record(
+    report_id: int,
+    record_id: int,
+    body: OprAiRecordUpdate,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    return opr_ai_service.update_record(db, ctx, report_id, record_id, body)
+
+
+@router.delete("/reports/{report_id}/ai-records/{record_id}", status_code=204)
+def delete_ai_record(
+    report_id: int,
+    record_id: int,
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    opr_ai_service.delete_record(db, ctx, report_id, record_id)

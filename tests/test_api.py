@@ -218,20 +218,21 @@ def test_tasks(client):
     r = client.post(url, json={"title": "x", "assignee_ids": [9999], "start_date": "2026-07-15", "end_date": "2026-07-16"}, headers=_auth(S["leader_at"]))
     assert r.status_code == 400
 
-    # 수정: 작성자/LEADER만 (member2는 둘 다 아님 → 403). 담당자 교체는 전체 교체
-    assert client.patch(f"{url}/{S['task_member']}", json={"title": "변경"}, headers=_auth(S["member_at"])).status_code == 403
+    # 수정: 편집 권한이 있는 팀원이면 누구나 가능 (2026-08 정책 변경, 이전에는 작성자/LEADER만)
+    assert client.patch(f"{url}/{S['task_member']}", json={"title": "변경"}, headers=_auth(S["member_at"])).status_code == 200
     r = client.patch(f"{url}/{S['task_member']}", json={"title": "변경됨", "assignee_ids": [S["member_id"]]}, headers=_auth(S["leader_at"]))
     assert r.status_code == 200 and [a["id"] for a in r.json()["assignees"]] == [S["member_id"]]
     # 담당자 비우기는 불가 (최소 1명)
     assert client.patch(f"{url}/{S['task_member']}", json={"assignee_ids": []}, headers=_auth(S["leader_at"])).status_code == 400
 
-    # 상태 변경: 담당자 중 한 명/LEADER — member2는 자기 담당 업무만 가능
-    assert client.patch(f"{url}/{S['task_leader']}/status", json={"status": "DONE"}, headers=_auth(S["member_at"])).status_code == 403
+    # 상태 변경도 편집 권한 팀원이면 담당 여부와 무관하게 가능 (2026-08 정책 변경)
+    assert client.patch(f"{url}/{S['task_leader']}/status", json={"status": "DONE"}, headers=_auth(S["member_at"])).status_code == 200
     assert client.patch(f"{url}/{S['task_member']}/status", json={"status": "DONE"}, headers=_auth(S["member_at"])).status_code == 200
     assert client.patch(f"{url}/{S['task_member']}/status", json={"status": "BAD"}, headers=_auth(S["member_at"])).status_code == 400
 
     r = client.get(url, params={"status": "DONE"}, headers=_auth(S["member_at"]))
-    assert r.status_code == 200 and r.json()["total_elements"] == 1
+    # 위에서 두 작업 모두 DONE 으로 바꿨다
+    assert r.status_code == 200 and r.json()["total_elements"] == 2
     # 담당자 필터: member2가 담당인 업무만
     r = client.get(url, params={"assignee_id": S["member_id"]}, headers=_auth(S["member_at"]))
     assert r.status_code == 200 and r.json()["total_elements"] == 1
@@ -241,7 +242,8 @@ def test_gantt(client):
     r = client.get(f"/api/projects/{S['pid']}/gantt", headers=_auth(S["member_at"]))
     assert r.status_code == 200
     body = r.json()
-    assert body["total_tasks"] == 2 and body["done_tasks"] == 1 and body["progress"] == 50.0
+    # test_tasks 에서 두 작업 모두 DONE 으로 바뀐다
+    assert body["total_tasks"] == 2 and body["done_tasks"] == 2 and body["progress"] == 100.0
     assert body["tasks"][0]["assignees"][0]["nickname"]
 
 
@@ -257,7 +259,8 @@ def test_daily_opr_source_and_save(client):
     source = client.get(f"{base}/source/{report_date}", headers=_auth(S["member_at"]))
     assert source.status_code == 200, source.text
     assert source.json()["report_date"] == report_date
-    assert any(row["section_type"] == "COMPLETED" for row in source.json()["rows"])
+    # 자동 채움을 없앴다 — 빈 초안으로 시작한다 (routers/opr.py: get_opr_source)
+    assert source.json()["rows"] == []
 
     payload = {
         "status": "DRAFT",
@@ -505,6 +508,276 @@ def test_task_opr_doc_relations(client):
 
 
 # ---------- 전역 자료실 (공통 자료 + 내 프로젝트 자료) ----------
+
+# ---------- OPR AI 사용 기록 ----------
+
+def _ai_payload(**overrides):
+    payload = {
+        "title": "로그인 오류 분석",
+        "question": "JWT 갱신 오류 원인 분석",
+        "answer_summary": "동시 요청에서 refresh 토큰이 두 번 소비됨",
+        "application_result": "요청 잠금 적용 후 오류 해결",
+        "lesson_learned": "토큰 갱신은 단일 비행으로 처리한다",
+        "providers": [{"provider": "CHATGPT"}, {"provider": "CLAUDE"}],
+        "task_ids": [S["task_leader"]],
+        "doc_ids": [S["doc_id"]],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_opr_ai_records_crud(client):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    # 다른 테스트 상태에 의존하지 않도록 이 테스트 전용 OPR 을 만든다
+    day = (datetime.now(ZoneInfo("Asia/Seoul")).date() - timedelta(days=5)).isoformat()
+    opr_base = f"/api/projects/{S['pid']}/opr"
+    own = client.put(
+        f"{opr_base}/{day}", json={"status": "DRAFT", "rows": []}, headers=_auth(S["leader_at"])
+    )
+    assert own.status_code == 200, own.text
+    base = f"{opr_base}/reports/{own.json()['id']}/ai-records"
+
+    # 생성 — AI 복수 선택 + WBS·자료 연결
+    r = client.post(base, json=_ai_payload(), headers=_auth(S["leader_at"]))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    S["ai_record_id"] = body["id"]
+    assert [p["provider"] for p in body["providers"]] == ["CHATGPT", "CLAUDE"]
+    assert body["task_ids"] == [S["task_leader"]]
+    assert body["doc_ids"] == [S["doc_id"]]
+    assert body["author_id"] == S["leader_id"]
+
+    # 조회 — 같은 프로젝트 팀원은 읽을 수 있고, 비멤버는 막힌다
+    listed = client.get(base, headers=_auth(S["member_at"]))
+    assert listed.status_code == 200 and len(listed.json()) == 1
+    assert client.get(base, headers=_auth(S["other_at"])).status_code == 403
+
+    # WBS·자료 없이도 저장된다
+    r = client.post(
+        base,
+        json=_ai_payload(title="WBS 없는 기록", task_ids=[], doc_ids=[]),
+        headers=_auth(S["leader_at"]),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["task_ids"] == [] and r.json()["doc_ids"] == []
+    no_wbs_id = r.json()["id"]
+
+    # 같은 AI 중복 차단
+    assert client.post(
+        base,
+        json=_ai_payload(providers=[{"provider": "CHATGPT"}, {"provider": "CHATGPT"}]),
+        headers=_auth(S["leader_at"]),
+    ).status_code == 400
+
+    # AI 최소 1개
+    assert client.post(
+        base, json=_ai_payload(providers=[]), headers=_auth(S["leader_at"])
+    ).status_code == 400
+
+    # 기타: 이름 없으면 400, 있으면 통과
+    assert client.post(
+        base, json=_ai_payload(providers=[{"provider": "OTHER"}]), headers=_auth(S["leader_at"])
+    ).status_code == 400
+    other_ok = client.post(
+        base,
+        json=_ai_payload(
+            title="기타 AI",
+            providers=[{"provider": "OTHER", "custom_provider_name": "사내 LLM"}],
+        ),
+        headers=_auth(S["leader_at"]),
+    )
+    assert other_ok.status_code == 201, other_ok.text
+    assert other_ok.json()["providers"][0]["custom_provider_name"] == "사내 LLM"
+    # 같은 '기타'라도 이름이 다르면 함께 넣을 수 있다
+    two_others = client.post(
+        base,
+        json=_ai_payload(
+            title="기타 둘",
+            providers=[
+                {"provider": "OTHER", "custom_provider_name": "사내 LLM"},
+                {"provider": "OTHER", "custom_provider_name": "다른 LLM"},
+            ],
+        ),
+        headers=_auth(S["leader_at"]),
+    )
+    assert two_others.status_code == 201, two_others.text
+    two_others_id = two_others.json()["id"]
+
+    # 알 수 없는 provider
+    assert client.post(
+        base, json=_ai_payload(providers=[{"provider": "UNKNOWN_AI"}]), headers=_auth(S["leader_at"])
+    ).status_code == 400
+
+    # 필수 문자열 공백 차단
+    for field in ("title", "question", "application_result"):
+        assert client.post(
+            base, json=_ai_payload(**{field: "   "}), headers=_auth(S["leader_at"])
+        ).status_code == 400, field
+
+    # 길이 초과 차단
+    assert client.post(
+        base, json=_ai_payload(title="가" * 201), headers=_auth(S["leader_at"])
+    ).status_code == 400
+
+    # 접근할 수 없는 WBS·자료 연결 차단
+    assert client.post(
+        base, json=_ai_payload(task_ids=[999999]), headers=_auth(S["leader_at"])
+    ).status_code == 400
+    assert client.post(
+        base, json=_ai_payload(doc_ids=[999999]), headers=_auth(S["leader_at"])
+    ).status_code == 400
+
+    # 남의 기록은 수정·삭제할 수 없다
+    rid = S["ai_record_id"]
+    assert client.patch(
+        f"{base}/{rid}", json={"title": "가로채기"}, headers=_auth(S["member_at"])
+    ).status_code == 403
+    assert client.delete(f"{base}/{rid}", headers=_auth(S["member_at"])).status_code == 403
+
+    # 수정 — 보낸 필드만 바뀐다
+    patched = client.patch(
+        f"{base}/{rid}",
+        json={
+            "title": "로그인 오류 분석 v2",
+            "providers": [{"provider": "GEMINI"}],
+            "task_ids": [],
+        },
+        headers=_auth(S["leader_at"]),
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["title"] == "로그인 오류 분석 v2"
+    assert [p["provider"] for p in patched.json()["providers"]] == ["GEMINI"]
+    assert patched.json()["task_ids"] == []
+    assert patched.json()["question"] == "JWT 갱신 오류 원인 분석"  # 안 보낸 필드는 유지
+    assert patched.json()["doc_ids"] == [S["doc_id"]]
+
+    # 수정 시에도 검증은 동일
+    assert client.patch(
+        f"{base}/{rid}", json={"providers": []}, headers=_auth(S["leader_at"])
+    ).status_code == 400
+
+    # 삭제 — 해당 기록만 사라진다
+    assert client.delete(f"{base}/{two_others_id}", headers=_auth(S["leader_at"])).status_code == 204
+    assert client.delete(f"{base}/{no_wbs_id}", headers=_auth(S["leader_at"])).status_code == 204
+    remaining = {item["id"] for item in client.get(base, headers=_auth(S["leader_at"])).json()}
+    assert no_wbs_id not in remaining and two_others_id not in remaining and rid in remaining
+
+    # 없는 기록 삭제는 404
+    assert client.delete(f"{base}/{no_wbs_id}", headers=_auth(S["leader_at"])).status_code == 404
+
+    # 이 테스트가 만든 OPR 은 정리한다 (다른 테스트 상태를 건드리지 않기 위함)
+    assert client.delete(f"{opr_base}/{day}", headers=_auth(S["leader_at"])).status_code == 204
+
+
+def test_opr_ai_records_via_report_save(client):
+    """OPR 통째 저장(PUT)으로도 AI 기록을 다룬다.
+
+    공유 상태를 건드리지 않도록 별도 날짜의 OPR·임시 작업으로 검증한다.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    day = (datetime.now(ZoneInfo("Asia/Seoul")).date() - timedelta(days=3)).isoformat()
+    base = f"/api/projects/{S['pid']}/opr"
+
+    temp = client.post(
+        f"/api/projects/{S['pid']}/tasks",
+        json={
+            "title": "AI 기록 연결용 임시 작업",
+            "start_date": "2026-07-14",
+            "end_date": "2026-07-20",
+        },
+        headers=_auth(S["leader_at"]),
+    )
+    assert temp.status_code == 201, temp.text
+    temp_task_id = temp.json()["id"]
+
+    saved = client.put(
+        f"{base}/{day}",
+        json={
+            "status": "DRAFT",
+            "rows": [],
+            "ai_records": [
+                {
+                    "title": "저장으로 생성 1",
+                    "question": "질문 1",
+                    "application_result": "결과 1",
+                    "providers": [{"provider": "COPILOT"}],
+                    "task_ids": [temp_task_id],
+                },
+                {
+                    "title": "저장으로 생성 2",
+                    "question": "질문 2",
+                    "application_result": "결과 2",
+                    "providers": [{"provider": "PERPLEXITY"}],
+                },
+            ],
+        },
+        headers=_auth(S["leader_at"]),
+    )
+    assert saved.status_code == 200, saved.text
+    report_id = saved.json()["id"]
+    records = saved.json()["ai_records"]
+    assert len(records) == 2
+    assert [item["sort_order"] for item in records] == [0, 1]
+    kept_id = records[0]["id"]
+    ai_base = f"{base}/reports/{report_id}/ai-records"
+
+    # ai_records 를 생략하면 기존 기록을 그대로 둔다 (구버전 클라이언트 호환)
+    again = client.put(
+        f"{base}/{day}", json={"status": "DRAFT", "rows": []}, headers=_auth(S["leader_at"])
+    )
+    assert again.status_code == 200, again.text
+    assert len(again.json()["ai_records"]) == 2
+
+    # 목록을 보내면 그 목록으로 맞춘다 — id 는 유지된 채 갱신되고, 빠진 기록은 삭제된다
+    trimmed = client.put(
+        f"{base}/{day}",
+        json={
+            "status": "DRAFT",
+            "rows": [],
+            "ai_records": [
+                {
+                    "id": kept_id,
+                    "title": "갱신됨",
+                    "question": "질문 1",
+                    "application_result": "결과 1",
+                    "providers": [{"provider": "GEMINI"}],
+                }
+            ],
+        },
+        headers=_auth(S["leader_at"]),
+    )
+    assert trimmed.status_code == 200, trimmed.text
+    assert len(trimmed.json()["ai_records"]) == 1
+    assert trimmed.json()["ai_records"][0]["id"] == kept_id
+    assert trimmed.json()["ai_records"][0]["title"] == "갱신됨"
+
+    # 남의 OPR 에는 AI 기록을 넣을 수 없다
+    assert client.post(
+        ai_base,
+        json={
+            "title": "침입",
+            "question": "q",
+            "application_result": "r",
+            "providers": [{"provider": "CLAUDE"}],
+        },
+        headers=_auth(S["member_at"]),
+    ).status_code == 403
+
+    # WBS 를 삭제해도 AI 기록 자체는 남는다
+    removed = client.delete(
+        f"/api/projects/{S['pid']}/tasks/{temp_task_id}", headers=_auth(S["leader_at"])
+    )
+    assert removed.status_code in (200, 204), removed.text
+    assert len(client.get(ai_base, headers=_auth(S["leader_at"])).json()) == 1
+
+    # OPR 을 삭제하면 AI 기록도 함께 사라진다
+    assert client.delete(f"{base}/{day}", headers=_auth(S["leader_at"])).status_code == 204
+    assert client.get(ai_base, headers=_auth(S["leader_at"])).status_code == 404
+
 
 def test_archive(client):
     # 프로젝트 자료 1건 생성 (멤버 전용 자료)

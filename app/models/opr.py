@@ -8,6 +8,7 @@ from app.db.base import Base, BigIntPK, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.doc import Doc
+    from app.models.opr_ai import OprAiRecord
     from app.models.project import Project
     from app.models.task import Task
     from app.models.user import User
@@ -51,6 +52,11 @@ class OprReport(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="OprRow.sort_order, OprRow.id",
     )
+    ai_records: Mapped[list["OprAiRecord"]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="OprAiRecord.sort_order, OprAiRecord.id",
+    )
 
     @property
     def author_nickname(self) -> str:
@@ -86,3 +92,36 @@ class OprRow(Base, TimestampMixin):
     report: Mapped["OprReport"] = relationship(back_populates="rows")
     task: Mapped["Task | None"] = relationship()
     doc: Mapped["Doc | None"] = relationship()
+    doc_links: Mapped[list["OprRowDoc"]] = relationship(
+        back_populates="row",
+        cascade="all, delete-orphan",
+        order_by="OprRowDoc.doc_id",
+    )
+
+    @property
+    def doc_ids(self) -> list[int]:
+        """이 행에 연결된 자료 id 목록. doc_id(대표)도 빠지지 않게 합친다."""
+        ids = [link.doc_id for link in self.doc_links]
+        if self.doc_id is not None and self.doc_id not in ids:
+            ids.insert(0, self.doc_id)
+        return ids
+
+
+class OprRowDoc(Base):
+    """OPR 행 ↔ 자료실 문서 (한 행에 여러 산출물).
+
+    opr_row 는 저장할 때마다 지우고 다시 만들기 때문에 행 id 로 별도 관리하면
+    저장 한 번에 연결이 날아간다. 그래서 행 데이터와 함께 재생성한다.
+    """
+
+    __tablename__ = "opr_row_doc"
+    __table_args__ = (Index("ix_opr_row_doc_doc", "doc_id"),)
+
+    row_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("opr_row.id", ondelete="CASCADE"), primary_key=True
+    )
+    doc_id: Mapped[int] = mapped_column(
+        BigIntPK, ForeignKey("doc.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    row: Mapped["OprRow"] = relationship(back_populates="doc_links")

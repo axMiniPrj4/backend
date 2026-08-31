@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import get_current_user
-from app.core.errors import ErrorCode, conflict, forbidden, not_found
+from app.core.errors import ErrorCode, bad_request, conflict, forbidden, not_found
 from app.core.files import delete_stored_file, save_upload, stream_download
 from app.core.pagination import parse_page_params, paginate
 from app.db.base import utcnow
@@ -41,6 +41,7 @@ def _to_response(doc: Doc) -> ArchiveDocResponse:
         created_at=doc.created_at,
         updated_at=doc.updated_at,
         latest_version=DocVersionResponse.model_validate(latest) if latest else None,
+        files=[DocVersionResponse.model_validate(v) for v in doc.files],
     )
 
 
@@ -92,31 +93,42 @@ def _require_manage(db: Session, user: User, doc: Doc, action: str):
 def create_common_doc(
     title: str = Form(min_length=1, max_length=200),
     content: str | None = Form(None),
-    file: UploadFile = File(...),  # 파일 필수 → version 1 자동 생성 (기존 정책 동일)
+    # 구버전 클라이언트 호환: 단일 file 도 계속 받는다
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """공통 자료 등록 — 로그인 사용자 누구나. project_id 없이 생성."""
-    stored = save_upload(file, _SUBDIR)
+    """공통 자료 등록 — 로그인 사용자 누구나. 첨부는 여러 개를 한 자료에 담는다."""
+    uploads = ([file] if file is not None else []) + [item for item in files if item is not None]
+    if not uploads:
+        raise bad_request(message="첨부파일을 최소 한 개 올려야 합니다.")
+
+    stored_list = []
     try:
+        for item in uploads:
+            stored_list.append(save_upload(item, _SUBDIR))
         doc = Doc(project_id=None, user_id=user.id, title=title, content=content)
         db.add(doc)
         db.flush()
-        db.add(
-            DocVersion(
-                doc_id=doc.id,
-                version_no=1,
-                file_name=stored.file_name,
-                stored_name=stored.stored_name,
-                file_size=stored.file_size,
-                mime_type=stored.mime_type,
-                uploaded_by=user.id,
+        for slot, stored in enumerate(stored_list):
+            db.add(
+                DocVersion(
+                    doc_id=doc.id,
+                    slot=slot,
+                    version_no=1,
+                    file_name=stored.file_name,
+                    stored_name=stored.stored_name,
+                    file_size=stored.file_size,
+                    mime_type=stored.mime_type,
+                    uploaded_by=user.id,
+                )
             )
-        )
         db.commit()
     except Exception:
         db.rollback()
-        delete_stored_file(stored.stored_name)
+        for stored in stored_list:
+            delete_stored_file(stored.stored_name)
         raise
     return _to_response(_get_accessible_doc(db, user, doc.id))
 
@@ -162,6 +174,18 @@ def list_archive(
 @router.get("/{doc_id}", response_model=ArchiveDocResponse)
 def get_archive_doc(doc_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return _to_response(_get_accessible_doc(db, user, doc_id))
+
+
+@router.get("/{doc_id}/files/{version_id}")
+def download_file_by_id(
+    doc_id: int, version_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """첨부 하나를 id 로 지목해 내려받는다 (슬롯 도입으로 version_no 는 유일하지 않다)."""
+    doc = _get_accessible_doc(db, user, doc_id)
+    version = next((v for v in doc.versions if v.id == version_id and not v.is_deleted), None)
+    if version is None:
+        raise not_found("파일을 찾을 수 없습니다.")
+    return stream_download(version.stored_name, version.file_name, version.mime_type)
 
 
 @router.get("/{doc_id}/file")
@@ -222,6 +246,7 @@ def delete_archive_doc(doc_id: int, user: User = Depends(get_current_user), db: 
 def upload_version(
     doc_id: int,
     file: UploadFile = File(...),
+    slot: int = Form(0),  # 어떤 첨부의 새 버전인지 (0 = 대표)
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -233,11 +258,12 @@ def upload_version(
     try:
         max_no = db.scalar(
             select(func.max(DocVersion.version_no))
-            .where(DocVersion.doc_id == doc.id)
+            .where(DocVersion.doc_id == doc.id, DocVersion.slot == slot)
             .execution_options(include_deleted=True)
         ) or 0
         version = DocVersion(
             doc_id=doc.id,
+            slot=slot,
             version_no=max_no + 1,
             file_name=stored.file_name,
             stored_name=stored.stored_name,

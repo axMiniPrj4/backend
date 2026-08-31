@@ -16,6 +16,7 @@ class DocUpdateRequest(BaseModel):
 
 class DocVersionResponse(ORMModel):
     id: int
+    slot: int = 0
     version_no: int
     file_name: str
     file_size: int
@@ -33,6 +34,8 @@ class DocResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     latest_version: DocVersionResponse | None
+    # 이 자료에 속한 첨부 파일 목록 (슬롯별 최신). latest_version 은 그중 첫 번째.
+    files: list[DocVersionResponse] = Field(default_factory=list)
 
 
 class ArchiveDocResponse(DocResponse):

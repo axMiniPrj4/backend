@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import ProjectContext
 from app.core.errors import forbidden, not_found
-from app.models import Doc, OprReport, OprRow, Task
+from app.models import Doc, OprReport, OprRow, OprRowDoc, Task
 from app.models.relation import OprReportDocLink, TaskDocLink
 
 
@@ -154,8 +154,8 @@ def get_task_relations(db: Session, ctx: ProjectContext, task_id: int) -> dict:
     for doc_id in direct_doc_ids:
         relation_types[doc_id].add("TASK")
     for row in rows:
-        if row.doc_id is not None:
-            relation_types[row.doc_id].add("OPR_ROW")
+        for doc_id in row.doc_ids:
+            relation_types[doc_id].add("OPR_ROW")
     docs = []
     if relation_types:
         docs = list(
@@ -189,8 +189,8 @@ def get_opr_relations(db: Session, ctx: ProjectContext, report_id: int) -> dict:
     for doc_id in direct_doc_ids:
         relation_types[doc_id].add("OPR_DIRECT")
     for row in report.rows:
-        if row.doc_id is not None:
-            relation_types[row.doc_id].add("OPR_ROW")
+        for doc_id in row.doc_ids:
+            relation_types[doc_id].add("OPR_ROW")
     if task_ids:
         for doc_id in db.scalars(
             select(TaskDocLink.doc_id).where(
@@ -236,9 +236,12 @@ def get_doc_relations(db: Session, ctx: ProjectContext, doc_id: int) -> dict:
             )
         )
     )
+    # 행 다중 연결(opr_row_doc)도 함께 본다
+    linked_row_ids = select(OprRowDoc.row_id).where(OprRowDoc.doc_id == doc_id)
+    doc_match = or_(OprRow.doc_id == doc_id, OprRow.id.in_(linked_row_ids))
     row_stmt = select(OprRow.report_id).join(OprReport, OprReport.id == OprRow.report_id).where(
         OprReport.project_id == ctx.project.id,
-        or_(OprRow.doc_id == doc_id, OprRow.task_id.in_(task_ids)) if task_ids else OprRow.doc_id == doc_id,
+        or_(doc_match, OprRow.task_id.in_(task_ids)) if task_ids else doc_match,
     )
     report_ids = direct_report_ids | set(db.scalars(row_stmt))
     reports = []
