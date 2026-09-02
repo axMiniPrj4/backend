@@ -247,6 +247,63 @@ def test_gantt(client):
     assert body["tasks"][0]["assignees"][0]["nickname"]
 
 
+def test_task_reorder(client):
+    """WBS 행 순서 일괄 저장. 다른 구분으로 옮길 때만 category 를 함께 실어 보낸다."""
+    url = f"/api/projects/{S['pid']}/tasks/reorder"
+    a, b = S["task_leader"], S["task_member"]
+
+    # 순서만 교체
+    r = client.patch(
+        url,
+        json={"items": [{"id": b, "sort_order": 1}, {"id": a, "sort_order": 2}]},
+        headers=_auth(S["member_at"]),
+    )
+    assert r.status_code == 200 and [t["id"] for t in r.json()] == [b, a]
+
+    # 작업 그룹 + 구분을 함께 이동
+    r = client.patch(
+        url,
+        json={
+            "items": [
+                {"id": b, "sort_order": 1, "work_group": "1. 준비", "category": "기획"},
+                {"id": a, "sort_order": 2, "work_group": "1. 준비", "category": "기획"},
+            ]
+        },
+        headers=_auth(S["member_at"]),
+    )
+    assert r.status_code == 200
+    assert {t["category"] for t in r.json()} == {"기획"}
+    assert {t["work_group"] for t in r.json()} == {"1. 준비"}
+
+    # 미전송 필드는 기존 값을 유지한다
+    r = client.patch(
+        url,
+        json={"items": [{"id": a, "sort_order": 1}, {"id": b, "sort_order": 2}]},
+        headers=_auth(S["member_at"]),
+    )
+    assert r.status_code == 200 and {t["category"] for t in r.json()} == {"기획"}
+
+    # 구분을 빈 값으로 지우는 것은 막는다
+    r = client.patch(
+        url,
+        json={"items": [{"id": a, "sort_order": 1, "category": "   "}]},
+        headers=_auth(S["member_at"]),
+    )
+    assert r.status_code == 400
+
+    # 같은 작업 중복 전달 400
+    r = client.patch(
+        url,
+        json={"items": [{"id": a, "sort_order": 1}, {"id": a, "sort_order": 2}]},
+        headers=_auth(S["member_at"]),
+    )
+    assert r.status_code == 400
+
+    # 비멤버는 403
+    r = client.patch(url, json={"items": [{"id": a, "sort_order": 1}]}, headers=_auth(S["other_at"]))
+    assert r.status_code == 403
+
+
 def test_daily_opr_source_and_save(client):
     from datetime import datetime
     from zoneinfo import ZoneInfo

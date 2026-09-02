@@ -208,9 +208,14 @@ def reorder_tasks(
     for item in body.items:
         task = by_id[item.id]
         task.sort_order = item.sort_order
-        # 구분(category)은 어떤 경우에도 변경하지 않는다.
         if item.work_group is not None:
             task.work_group = item.work_group.strip()
+        # 다른 구분으로 옮긴 경우에만 전달된다. 빈 값으로 지우는 것은 막는다.
+        if item.category is not None:
+            category = item.category.strip()
+            if not category:
+                raise bad_request(message="구분은 빈 값일 수 없습니다.")
+            task.category = category
 
     db.commit()
     return sorted(rows, key=lambda t: (t.sort_order, t.id))

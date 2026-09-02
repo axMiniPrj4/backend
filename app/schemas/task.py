@@ -58,8 +58,9 @@ class TaskUpdateRequest(BaseModel):
 class TaskReorderItem(BaseModel):
     id: int
     sort_order: int = Field(ge=0)
-    # 세부작업을 다른 작업(work_group)으로 옮기는 경우에만 지정. 구분(category)은 변경 불가.
+    # 아래 둘은 실제로 소속이 바뀐 항목에만 실어 보낸다. 미전송이면 기존 값을 유지한다.
     work_group: str | None = Field(default=None, max_length=100)
+    category: str | None = Field(default=None, max_length=50)
 
 
 class TaskReorderRequest(BaseModel):
