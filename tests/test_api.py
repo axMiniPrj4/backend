@@ -304,6 +304,54 @@ def test_task_reorder(client):
     assert r.status_code == 403
 
 
+def test_task_create_placement(client):
+    """새 작업은 같은 구분(되도록 같은 작업 그룹) 뒤에 끼어 든다. append=True 면 맨 뒤."""
+    url = f"/api/projects/{S['pid']}/tasks"
+    # test_task_reorder 가 기존 2건을 기획 / "1. 준비" 로 맞춰 두었다
+    a, b = S["task_leader"], S["task_member"]
+
+    def order():
+        r = client.get(url, params={"sort": "sort_order,asc", "size": 100}, headers=_auth(S["member_at"]))
+        assert r.status_code == 200
+        return [t["id"] for t in r.json()["items"]]
+
+    def create(title, category, work_group, append=None):
+        payload = {
+            "title": title,
+            "category": category,
+            "work_group": work_group,
+            "start_date": "2026-07-14",
+            "end_date": "2026-07-15",
+        }
+        if append is not None:
+            payload["append"] = append
+        r = client.post(url, json=payload, headers=_auth(S["leader_at"]))
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    assert order() == [a, b]
+
+    # 같은 구분이 없으면 맨 뒤
+    dev = create("개발 작업", "개발", "3. 구현")
+    assert order() == [a, b, dev]
+
+    # 같은 구분 + 같은 작업 그룹 → 그 뒤에 끼어 들고 나머지는 한 칸씩 밀린다
+    plan_same = create("기획 추가", "기획", "1. 준비")
+    assert order() == [a, b, plan_same, dev]
+
+    # 같은 구분 + 다른 작업 그룹 → 그 구분의 마지막 뒤
+    plan_other = create("기획 조사", "기획", "2. 조사")
+    assert order() == [a, b, plan_same, plan_other, dev]
+
+    # append=True 는 예전처럼 맨 뒤 (엑셀 업로드가 쓰는 경로)
+    appended = create("엑셀에서 온 기획", "기획", "1. 준비", append=True)
+    assert order() == [a, b, plan_same, plan_other, dev, appended]
+
+    for task_id in (dev, plan_same, plan_other, appended):
+        assert client.delete(f"{url}/{task_id}", headers=_auth(S["leader_at"])).status_code == 204
+    assert order() == [a, b]
+
+
 def test_daily_opr_source_and_save(client):
     from datetime import datetime
     from zoneinfo import ZoneInfo

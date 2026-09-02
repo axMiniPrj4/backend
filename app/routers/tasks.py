@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import ProjectContext, get_project_context
 from app.core.errors import ErrorCode, bad_request, forbidden, not_found
 from app.core.pagination import DEFAULT_SIZE, parse_page_params, paginate
 from app.db.session import get_db
-from app.models import ProjectMember, Task, TaskHistory, User
+from app.models import OprReport, OprRow, ProjectMember, Task, TaskHistory, User
 from app.models.task import TaskPriority, TaskStatus
 from app.schemas.common import PageResponse
 from app.schemas.task import (
@@ -15,6 +15,8 @@ from app.schemas.task import (
     TaskAssigneeResponse,
     TaskCreateRequest,
     TaskHistoryResponse,
+    TaskLinkSummaryItem,
+    TaskLinkSummaryResponse,
     TaskReorderRequest,
     TaskResponse,
     TaskStatusUpdateRequest,
@@ -70,13 +72,59 @@ def _validate_dates(start, end, project=None):
 
 
 def _next_sort_order(db: Session, project_id: int) -> int:
-    """프로젝트 내 마지막 순서 + 1 (신규 작업은 목록 맨 아래)."""
+    """프로젝트 내 마지막 순서 + 1 (목록 맨 아래)."""
     current = db.scalar(
         select(func.max(Task.sort_order)).where(
             Task.project_id == project_id, Task.deleted_at.is_(None)
         )
     )
     return int(current or 0) + 1
+
+
+def _placement_sort_order(db: Session, project_id: int, category: str, work_group: str) -> int:
+    """새 작업이 들어갈 자리 — 같은 구분(되도록 같은 작업 그룹)의 마지막 바로 뒤.
+
+    무조건 맨 아래에 붙이면 나중에 만든 작업이 구분과 무관하게 꼬리에 쌓여,
+    WBS 가 「기획 … 배포 → 기타 → 배포 → 기획」처럼 조각난다. 화면이 저장된
+    순서를 그대로 그리기 때문에 이 조각남이 그대로 보인다.
+
+    같은 구분이 여러 군데 흩어져 있으면 마지막에 나온 자리를 기준으로 삼는다.
+    """
+    rows = db.execute(
+        select(Task.sort_order, Task.category, Task.work_group)
+        .where(Task.project_id == project_id, Task.deleted_at.is_(None))
+        .order_by(Task.sort_order, Task.id)
+    ).all()
+    if not rows:
+        return 1
+
+    last_in_group = None
+    last_in_category = None
+    for order, row_category, row_work_group in rows:
+        if row_category != category:
+            continue
+        last_in_category = order
+        if row_work_group == work_group:
+            last_in_group = order
+
+    anchor = last_in_group if last_in_group is not None else last_in_category
+    if anchor is None:
+        return int(rows[-1][0]) + 1
+    return int(anchor) + 1
+
+
+def _shift_sort_orders(db: Session, project_id: int, from_order: int) -> None:
+    """끼워 넣을 자리부터 뒤를 한 칸씩 민다.
+
+    (project_id, sort_order) 인덱스가 비유일이라 중간 단계 충돌을 걱정하지 않아도 된다.
+    소프트 삭제된 행도 함께 민다 — 되살릴 때 순서가 어긋나지 않도록.
+    """
+    db.execute(
+        update(Task)
+        .where(Task.project_id == project_id, Task.sort_order >= from_order)
+        .values(sort_order=Task.sort_order + 1)
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _resolve_assignees(db: Session, project_id: int, assignee_ids: list[int]) -> list[User]:
@@ -124,6 +172,15 @@ def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_proje
     # 미지정 시 생성자 자동 할당
     assignee_ids = body.assignee_ids or [ctx.user.id]
     assignees = _resolve_assignees(db, ctx.project.id, assignee_ids)
+
+    category = (body.category or "기타").strip() or "기타"
+    work_group = (body.work_group or "").strip()
+    if body.append:
+        sort_order = _next_sort_order(db, ctx.project.id)
+    else:
+        sort_order = _placement_sort_order(db, ctx.project.id, category, work_group)
+        _shift_sort_orders(db, ctx.project.id, sort_order)
+
     task = Task(
         project_id=ctx.project.id,
         title=body.title,
@@ -132,11 +189,11 @@ def create_task(body: TaskCreateRequest, ctx: ProjectContext = Depends(get_proje
         start_date=body.start_date,
         end_date=body.end_date,
         assignees=assignees,
-        category=(body.category or "기타").strip() or "기타",
-        work_group=(body.work_group or "").strip(),
+        category=category,
+        work_group=work_group,
         color=body.color,
         priority=body.priority or TaskPriority.MEDIUM,
-        sort_order=_next_sort_order(db, ctx.project.id),
+        sort_order=sort_order,
         primary_assignee_id=_pick_primary(assignees, body.primary_assignee_id),
     )
     db.add(task)
@@ -219,6 +276,44 @@ def reorder_tasks(
 
     db.commit()
     return sorted(rows, key=lambda t: (t.sort_order, t.id))
+
+
+# 리터럴 경로라 "/tasks/{task_id}" 보다 먼저 선언해야 한다.
+@router.get("/tasks/link-summary", response_model=TaskLinkSummaryResponse)
+def task_link_summary(
+    ctx: ProjectContext = Depends(get_project_context),
+    db: Session = Depends(get_db),
+):
+    """작업마다 OPR 몇 줄·몇 건에 연결돼 있는지.
+
+    WBS 엑셀 업로드는 기존 작업을 전부 지우고 새로 만든다. 지워진 작업을 가리키던
+    OPR 행은 이름을 잃고 「Task #123」으로만 남으므로, 삭제 전에 경고할 수 있도록
+    연결 건수를 한 번에 내려준다.
+    """
+    rows = db.execute(
+        select(
+            OprRow.task_id,
+            func.count(OprRow.id),
+            func.count(func.distinct(OprRow.report_id)),
+        )
+        .join(OprReport, OprReport.id == OprRow.report_id)
+        .join(Task, Task.id == OprRow.task_id)
+        .where(
+            OprReport.project_id == ctx.project.id,
+            Task.project_id == ctx.project.id,
+            # 이미 지워진 작업을 가리키는 행은 셀 필요가 없다 — 이미 끊긴 연결이다
+            Task.deleted_at.is_(None),
+        )
+        .group_by(OprRow.task_id)
+    ).all()
+    return TaskLinkSummaryResponse(
+        items=[
+            TaskLinkSummaryItem(
+                task_id=task_id, opr_row_count=row_count, opr_report_count=report_count
+            )
+            for task_id, row_count, report_count in rows
+        ]
+    )
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)

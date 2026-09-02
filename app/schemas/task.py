@@ -30,6 +30,9 @@ class TaskCreateRequest(BaseModel):
     priority: str = TaskPriority.MEDIUM
     # 미지정 시 assignee_ids 첫 번째가 주담당자가 된다.
     primary_assignee_id: int | None = None
+    # 기본값은 같은 구분 뒤에 끼워 넣기. 엑셀 업로드처럼 시트 순서를 그대로
+    # 지켜야 하는 경우에만 True 로 보내 맨 뒤에 붙인다.
+    append: bool = False
 
     @field_validator("priority")
     @classmethod
@@ -53,6 +56,18 @@ class TaskUpdateRequest(BaseModel):
     @classmethod
     def _priority(cls, v):
         return _validate_priority(v) if v is not None else v
+
+
+class TaskLinkSummaryItem(BaseModel):
+    task_id: int
+    opr_row_count: int
+    opr_report_count: int
+
+
+class TaskLinkSummaryResponse(BaseModel):
+    """작업별 OPR 연결 건수. WBS 엑셀 업로드 미리보기에서 경고를 띄우는 데 쓴다."""
+
+    items: list[TaskLinkSummaryItem]
 
 
 class TaskReorderItem(BaseModel):
