@@ -352,6 +352,29 @@ def test_task_create_placement(client):
     assert order() == [a, b]
 
 
+def test_my_project_order(client):
+    """프로젝트 카드 순서는 사용자별로 따로 저장된다."""
+    url = "/api/users/me/project-order"
+    pid = S["pid"]
+
+    assert client.get(url, headers=_auth(S["leader_at"])).json()["project_ids"] == []
+
+    r = client.put(url, json={"project_ids": [pid]}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 200 and r.json()["project_ids"] == [pid]
+    assert client.get(url, headers=_auth(S["leader_at"])).json()["project_ids"] == [pid]
+
+    # 볼 수 없는 프로젝트 id 와 중복은 조용히 걸러진다
+    r = client.put(url, json={"project_ids": [999999, pid, pid]}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 200 and r.json()["project_ids"] == [pid]
+
+    # 다른 사람 순서에는 영향이 없다
+    assert client.get(url, headers=_auth(S["other_at"])).json()["project_ids"] == []
+
+    # 통째로 비우기
+    r = client.put(url, json={"project_ids": []}, headers=_auth(S["leader_at"]))
+    assert r.status_code == 200 and r.json()["project_ids"] == []
+
+
 def test_daily_opr_source_and_save(client):
     from datetime import datetime
     from zoneinfo import ZoneInfo

@@ -112,6 +112,18 @@ class AvailabilityResponse(BaseModel):
     available: bool
 
 
+class ProjectOrderUpdateRequest(BaseModel):
+    """대시보드에 보이는 차례대로 프로젝트 id 를 담아 보낸다."""
+
+    project_ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+class ProjectOrderResponse(BaseModel):
+    """저장된 내 순서. 목록에 없는 프로젝트는 화면에서 뒤에 붙이면 된다."""
+
+    project_ids: list[int]
+
+
 class LoginHistoryResponse(ORMModel):
     id: int
     ip: str | None

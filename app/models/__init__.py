@@ -18,6 +18,7 @@ from app.models.opr_ai import (
     OprAiRecordTask,
 )
 from app.models.relation import OprReportDocLink, TaskDocLink
+from app.models.user_project_order import UserProjectOrder
 from app.models.collaboration import (
     AiMessage,
     AiThread,
@@ -35,6 +36,7 @@ __all__ = [
     "Todo", "ProjectTodo",
     "Doc", "DocVersion", "Inquiry", "Answer", "Notice", "AnswerTemplate", "AdminAuditLog", "Payment",
     "Notification", "OprReport", "OprRow", "OprRowDoc", "TaskDocLink", "OprReportDocLink",
+    "UserProjectOrder",
     "OprAiRecord", "OprAiRecordProvider", "OprAiRecordTask", "OprAiRecordDoc",
     "ChatMessage", "WhiteboardBoard", "WorkspaceFile", "WorkspaceFileVersion",
     "ErdDocument", "VideoSession", "AiThread", "AiMessage", "CalendarEvent",

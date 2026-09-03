@@ -2,7 +2,7 @@ from collections import Counter
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core import token_store
@@ -11,7 +11,16 @@ from app.core.errors import ErrorCode, bad_request, conflict
 from app.core.pagination import DEFAULT_SIZE, MAX_SIZE, paginate, parse_page_params
 from app.core.security import hash_password, verify_password
 from app.db.session import get_db
-from app.models import LoginHistory, OprReport, Payment, Project, Task, User
+from app.models import (
+    LoginHistory,
+    OprReport,
+    Payment,
+    Project,
+    ProjectMember,
+    Task,
+    User,
+    UserProjectOrder,
+)
 from app.models.opr import OprSection
 from app.models.payment import PaymentMethod
 from app.models.task import TaskStatus, task_assignee
@@ -23,6 +32,8 @@ from app.schemas.user import (
     LoginHistoryResponse,
     PasswordChangeRequest,
     PlanUpdateRequest,
+    ProjectOrderResponse,
+    ProjectOrderUpdateRequest,
     UserResponse,
     UserUpdateRequest,
 )
@@ -62,6 +73,61 @@ def change_password(body: PasswordChangeRequest, user: User = Depends(get_curren
     db.commit()
     # 다른 기기 세션 차단 — RT 폐기 (보유한 AT는 만료까지 유효)
     token_store.delete_refresh_token(user.id)
+
+
+def _visible_project_ids(db: Session, user: User) -> set[int]:
+    """대시보드에 보이는 프로젝트 — projects.list_my_projects 와 같은 기준."""
+    from app.models.user import UserRole
+
+    stmt = select(Project.id)
+    if user.role != UserRole.SYSTEM_ADMIN:
+        stmt = stmt.join(ProjectMember, ProjectMember.project_id == Project.id).where(
+            ProjectMember.user_id == user.id
+        )
+    return set(db.scalars(stmt).all())
+
+
+@router.get("/me/project-order", response_model=ProjectOrderResponse)
+def get_my_project_order(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """내가 정해 둔 프로젝트 카드 순서. 없으면 빈 목록."""
+    rows = db.execute(
+        select(UserProjectOrder.project_id)
+        .where(UserProjectOrder.user_id == user.id)
+        .order_by(UserProjectOrder.sort_order, UserProjectOrder.project_id)
+    ).all()
+    return ProjectOrderResponse(project_ids=[r[0] for r in rows])
+
+
+@router.put("/me/project-order", response_model=ProjectOrderResponse)
+def save_my_project_order(
+    body: ProjectOrderUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """내 순서를 통째로 갈아 끼운다. 다른 사용자에게는 영향이 없다.
+
+    볼 수 없는 프로젝트 id 는 조용히 걸러낸다 — 저장하는 사이에 프로젝트가
+    지워지거나 탈퇴하는 경우가 있어 400 으로 막으면 순서 저장만 계속 실패한다.
+    """
+    visible = _visible_project_ids(db, user)
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for project_id in body.project_ids:
+        if project_id in visible and project_id not in seen:
+            seen.add(project_id)
+            ordered.append(project_id)
+
+    db.execute(
+        delete(UserProjectOrder).where(UserProjectOrder.user_id == user.id)
+    )
+    db.add_all(
+        UserProjectOrder(user_id=user.id, project_id=project_id, sort_order=index)
+        for index, project_id in enumerate(ordered)
+    )
+    db.commit()
+    return ProjectOrderResponse(project_ids=ordered)
 
 
 @router.get("/me/login-history", response_model=PageResponse[LoginHistoryResponse])
